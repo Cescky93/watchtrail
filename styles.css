@@ -301,3 +301,106 @@ dialog::backdrop { background: rgba(0,0,0,.68); backdrop-filter: blur(5px); }
     padding: 8px;
   }
 }
+
+.edit-box {
+  margin: 16px 0 18px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: rgba(255,255,255,.055);
+}
+
+.edit-box h3 {
+  margin-bottom: 10px;
+}
+
+.edit-grid {
+  display: grid;
+  grid-template-columns: 1.8fr .6fr .7fr auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.compact-edit-grid {
+  grid-template-columns: 1fr auto auto;
+}
+
+.edit-grid label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: .86rem;
+  font-weight: 700;
+}
+
+.edit-grid .checkline {
+  min-height: 42px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+}
+
+.edit-grid .checkline input {
+  min-height: auto;
+  width: 18px;
+  height: 18px;
+}
+
+.detail-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.episode-card {
+  position: relative;
+  display: grid;
+  gap: 6px;
+}
+
+.episode-card .episode-tile {
+  width: 100%;
+}
+
+.ep-tools {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.tiny {
+  min-height: 30px;
+  padding: 4px 8px;
+  border-radius: 10px;
+  font-size: .86rem;
+}
+
+.episode-card.is-watched .ep-tools .ghost {
+  border-color: rgba(52, 211, 153, .32);
+}
+
+@media (max-width: 900px) {
+  .edit-grid,
+  .compact-edit-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 700px) {
+  .edit-grid,
+  .compact-edit-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .detail-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .detail-actions button {
+    flex: 1;
+  }
+}

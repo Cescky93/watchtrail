@@ -829,11 +829,17 @@
     const label = `S${numberFrom(ep.season)}E${numberFrom(ep.number)}`;
     const title = ep.title && !/^Episodio\s+\d+$/i.test(ep.title) ? ep.title : '';
     const date = ep.watchedAt ? `Visto: ${ep.watchedAt}` : 'Non visto';
-    return `<button class="episode-tile ${ep.watched ? 'is-watched' : ''}" data-ep="${esc(ep.id)}" title="${esc(label + (title ? ' · ' + title : ''))}">
-      <span class="ep-code">${esc(label)}</span>
-      ${title ? `<span class="ep-title">${esc(title)}</span>` : ''}
-      <span class="ep-state">${ep.watched ? '✓ Visto' : date}</span>
-    </button>`;
+    return `<div class="episode-card ${ep.watched ? 'is-watched' : ''}">
+      <button class="episode-tile ${ep.watched ? 'is-watched' : ''}" data-ep="${esc(ep.id)}" title="${esc(label + (title ? ' · ' + title : ''))}">
+        <span class="ep-code">${esc(label)}</span>
+        ${title ? `<span class="ep-title">${esc(title)}</span>` : ''}
+        <span class="ep-state">${ep.watched ? '✓ Visto' : date}</span>
+      </button>
+      <div class="ep-tools">
+        <button class="ghost tiny edit-ep" data-ep="${esc(ep.id)}" title="Modifica episodio">✎</button>
+        <button class="danger tiny delete-ep" data-ep="${esc(ep.id)}" title="Elimina episodio">×</button>
+      </div>
+    </div>`;
   }
 
   function seasonsForSeries(seriesId) {
@@ -853,19 +859,147 @@
     return numberFrom($('seasonPicker')?.value || fallback || 1);
   }
 
+  async function saveItemEdits(item) {
+    const oldTitle = item.title;
+    const newTitle = $('editItemTitle')?.value.trim() || item.title;
+    const newYear = $('editItemYear')?.value.trim() || '';
+    item.title = newTitle;
+    item.year = newYear;
+    item.favorite = Boolean($('editItemFavorite')?.checked);
+    item.search = norm(`${item.title} ${item.year || ''}`);
+    if (item.kind === 'series') {
+      (state.episodes[item.id] || []).forEach(ep => {
+        ep.seriesTitle = item.title;
+      });
+    }
+    await saveState();
+    renderAll();
+    openDetail(item.id, selectedSeasonFromDialog(1));
+    log(`Scheda aggiornata: ${oldTitle} → ${item.title}.`);
+  }
+
+  async function deleteItem(item) {
+    const label = item.kind === 'movie' ? 'film' : 'serie';
+    if (!confirm(`Eliminare definitivamente ${label} "${item.title}" dal database locale?`)) return;
+    state.items = state.items.filter(i => i.id !== item.id);
+    if (item.kind === 'series') delete state.episodes[item.id];
+    await saveState();
+    renderAll();
+    $('detailDialog')?.close();
+    log(`Eliminato: ${item.title}.`);
+  }
+
+  async function editEpisode(seriesId, episodeId) {
+    const eps = state.episodes[seriesId] || [];
+    const ep = eps.find(e => e.id === episodeId);
+    if (!ep) return;
+
+    const season = prompt('Stagione', String(numberFrom(ep.season)));
+    if (season === null) return;
+    const number = prompt('Episodio', String(numberFrom(ep.number)));
+    if (number === null) return;
+    const title = prompt('Titolo episodio', ep.title || '');
+    if (title === null) return;
+    const watchedAt = prompt('Data visto, opzionale YYYY-MM-DD', ep.watchedAt || '');
+    if (watchedAt === null) return;
+
+    const newSeason = numberFrom(season);
+    const newNumber = numberFrom(number);
+    if ((!newSeason && newSeason !== 0) || !newNumber) {
+      log('Stagione o episodio non validi.', 'error');
+      return;
+    }
+
+    const duplicate = eps.find(e => e.id !== ep.id && numberFrom(e.season) === newSeason && numberFrom(e.number) === newNumber);
+    if (duplicate && !confirm(`Esiste già S${newSeason}E${newNumber}. Vuoi comunque sovrascrivere questo episodio?`)) return;
+
+    ep.season = newSeason;
+    ep.number = newNumber;
+    ep.title = title.trim() || `Episodio ${newNumber}`;
+    ep.watchedAt = watchedAt.trim();
+    ep.watched = Boolean(ep.watchedAt) || ep.watched;
+    ep.id = `${seriesId}_s${newSeason}_e${newNumber}`;
+
+    state.episodes[seriesId] = mergeEpisodes(eps, []);
+    await saveState();
+    renderAll();
+    openDetail(seriesId, newSeason);
+    log(`Episodio modificato: S${newSeason}E${newNumber}.`);
+  }
+
+  async function deleteEpisode(seriesId, episodeId) {
+    const eps = state.episodes[seriesId] || [];
+    const ep = eps.find(e => e.id === episodeId);
+    if (!ep) return;
+    if (!confirm(`Eliminare S${ep.season}E${ep.number} dal database locale?`)) return;
+    state.episodes[seriesId] = eps.filter(e => e.id !== episodeId);
+    await saveState();
+    renderAll();
+    openDetail(seriesId, numberFrom(ep.season));
+    log(`Episodio eliminato: S${ep.season}E${ep.number}.`);
+  }
+
   function openDetail(id, preferredSeason = null) {
     const item = state.items.find(i => i.id === id);
     if (!item) return;
     const content = $('detailContent');
+
     if (item.kind === 'movie') {
-      content.innerHTML = `<h2>${esc(item.title)}</h2><p>${esc(item.year || '')}</p><button class="primary" id="toggleMovieSeen">${item.watched ? 'Segna non visto' : 'Segna visto'}</button>`;
+      content.innerHTML = `
+        <div class="detail-head">
+          <div>
+            <h2>${esc(item.title)}</h2>
+            <p>${esc(item.year || '')} ${item.watched ? '· visto' : '· non visto'}</p>
+          </div>
+          <button class="danger" id="deleteItemBtn">Elimina</button>
+        </div>
+
+        <section class="edit-box">
+          <h3>Modifica scheda</h3>
+          <div class="edit-grid">
+            <label>Titolo
+              <input id="editItemTitle" value="${esc(item.title)}">
+            </label>
+            <label>Anno
+              <input id="editItemYear" value="${esc(item.year || '')}" inputmode="numeric">
+            </label>
+            <label class="checkline">
+              <input id="editItemFavorite" type="checkbox" ${item.favorite ? 'checked' : ''}> preferito
+            </label>
+            <button class="primary" id="saveItemBtn">Salva modifiche</button>
+          </div>
+        </section>
+
+        <section class="edit-box">
+          <h3>Stato film</h3>
+          <div class="edit-grid compact-edit-grid">
+            <label>Data visto
+              <input id="movieWatchedAt" type="date" value="${esc((item.watchedAt || '').slice(0, 10))}">
+            </label>
+            <button class="primary" id="toggleMovieSeen">${item.watched ? 'Segna non visto' : 'Segna visto'}</button>
+            <button class="ghost" id="saveMovieDateBtn">Salva data</button>
+          </div>
+        </section>
+      `;
+
+      $('saveItemBtn').onclick = () => saveItemEdits(item);
+      $('deleteItemBtn').onclick = () => deleteItem(item);
       $('toggleMovieSeen').onclick = async () => {
         item.watched = !item.watched;
         item.status = item.watched ? 'watched' : 'planned';
-        if (item.watched && !item.watchedAt) item.watchedAt = new Date().toISOString().slice(0, 10);
+        item.watchedAt = item.watched ? (item.watchedAt || new Date().toISOString().slice(0, 10)) : '';
         await saveState();
         renderAll();
         openDetail(id);
+      };
+      $('saveMovieDateBtn').onclick = async () => {
+        item.watchedAt = $('movieWatchedAt').value || '';
+        item.watched = Boolean(item.watchedAt);
+        item.status = item.watched ? 'watched' : 'planned';
+        await saveState();
+        renderAll();
+        openDetail(id);
+        log(`${item.title}: data visione aggiornata.`);
       };
     } else {
       const eps = state.episodes[item.id] || [];
@@ -890,14 +1024,33 @@
             <h2>${esc(item.title)}</h2>
             <p>${seenCount}/${eps.length} episodi visti${next ? ` · prossimo: S${esc(next.season)}E${esc(next.number)}` : ''}</p>
           </div>
-          ${next ? `<button class="primary" id="markNextBtn">Segna prossimo visto</button>` : ''}
+          <div class="detail-actions">
+            ${next ? `<button class="primary" id="markNextBtn">Segna prossimo visto</button>` : ''}
+            <button class="danger" id="deleteItemBtn">Elimina serie</button>
+          </div>
         </div>
+
+        <section class="edit-box">
+          <h3>Correggi scheda serie</h3>
+          <div class="edit-grid">
+            <label>Titolo
+              <input id="editItemTitle" value="${esc(item.title)}">
+            </label>
+            <label>Anno
+              <input id="editItemYear" value="${esc(item.year || '')}" inputmode="numeric">
+            </label>
+            <label class="checkline">
+              <input id="editItemFavorite" type="checkbox" ${item.favorite ? 'checked' : ''}> preferita
+            </label>
+            <button class="primary" id="saveItemBtn">Salva modifiche</button>
+          </div>
+        </section>
 
         <section class="episode-board-box">
           <div class="episode-board-head">
             <div>
               <h3>Episodi</h3>
-              <p class="hint">Seleziona la stagione e clicca direttamente l'episodio per segnarlo visto/non visto.</p>
+              <p class="hint">Clicca l'episodio per visto/non visto. Usa ✎ per correggere stagione, numero o titolo. Usa × per rimuovere un episodio importato male.</p>
             </div>
             <select id="seasonPicker" aria-label="Scegli stagione">${seasonOptions}</select>
           </div>
@@ -933,7 +1086,8 @@
         }).join('')}</section>` : ''}
       `;
 
-      const rerenderSameSeason = () => openDetail(id, selectedSeasonFromDialog(activeSeason));
+      $('saveItemBtn').onclick = () => saveItemEdits(item);
+      $('deleteItemBtn').onclick = () => deleteItem(item);
 
       const seasonPicker = $('seasonPicker');
       if (seasonPicker) seasonPicker.onchange = () => openDetail(id, numberFrom(seasonPicker.value));
@@ -963,6 +1117,16 @@
         renderAll();
         openDetail(id, numberFrom(ep.season));
         log(`${item.title}: S${ep.season}E${ep.number} ${ep.watched ? 'visto' : 'non visto'}.`);
+      }));
+
+      content.querySelectorAll('.edit-ep').forEach(btn => btn.addEventListener('click', e => {
+        e.stopPropagation();
+        editEpisode(item.id, btn.dataset.ep);
+      }));
+
+      content.querySelectorAll('.delete-ep').forEach(btn => btn.addEventListener('click', e => {
+        e.stopPropagation();
+        deleteEpisode(item.id, btn.dataset.ep);
       }));
 
       const readRange = () => ({

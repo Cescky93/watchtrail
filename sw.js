@@ -1,4 +1,4 @@
-const CACHE_NAME = 'watchtrail-v40260703-click-episodes';
+const CACHE_NAME = 'watchtrail-v50260703-edit-library';
 const ASSETS = [
   './',
   './index.html',
