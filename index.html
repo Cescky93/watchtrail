@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#080b18">
+  <title>WatchTrail</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="appShell">
+    <header class="topbar">
+      <div>
+        <div class="brand">WatchTrail</div>
+        <div class="subtitle">TV Time rescue kit · tracker personale</div>
+      </div>
+      <button id="installBtn" class="ghost hidden">Installa</button>
+    </header>
+
+    <main>
+      <section id="hero" class="hero card">
+        <div>
+          <p class="eyebrow">Beta recuperabile</p>
+          <h1>Importa, continua, esporta.</h1>
+          <p>Archivio locale per serie, anime e film. Pensato come ponte verso Refract, ma abbastanza ordinato da diventare una mini app tua.</p>
+        </div>
+        <div class="heroActions">
+          <label class="primary fileLabel">
+            Importa TV Time
+            <input id="fileInput" type="file" multiple accept=".zip,.json,.csv,.html,text/csv,application/json,application/zip">
+          </label>
+          <button id="exportBtn" class="secondary">Esporta backup</button>
+        </div>
+      </section>
+
+      <section class="statsGrid" id="statsGrid">
+        <div class="stat card"><span>Serie</span><strong id="statSeries">0</strong></div>
+        <div class="stat card"><span>Episodi visti</span><strong id="statEpisodes">0</strong></div>
+        <div class="stat card"><span>Film</span><strong id="statMovies">0</strong></div>
+        <div class="stat card"><span>In corso</span><strong id="statProgress">0</strong></div>
+      </section>
+
+      <nav class="tabs card" aria-label="Sezioni">
+        <button class="tab active" data-view="home">Home</button>
+        <button class="tab" data-view="library">Libreria</button>
+        <button class="tab" data-view="add">Aggiungi</button>
+        <button class="tab" data-view="tools">Backup</button>
+      </nav>
+
+      <section id="homeView" class="view active">
+        <div class="sectionHead">
+          <h2>Continua</h2>
+          <button id="refreshContinue" class="ghost">Aggiorna</button>
+        </div>
+        <div id="continueList" class="list"></div>
+      </section>
+
+      <section id="libraryView" class="view">
+        <div class="searchRow card">
+          <input id="librarySearch" type="search" placeholder="Cerca serie, anime o film…">
+          <select id="typeFilter">
+            <option value="all">Tutto</option>
+            <option value="series">Serie/anime</option>
+            <option value="movie">Film</option>
+          </select>
+        </div>
+        <div id="libraryList" class="list"></div>
+      </section>
+
+      <section id="addView" class="view">
+        <div class="card formCard">
+          <h2>Aggiungi titolo</h2>
+          <p class="muted">Ricerca rapida online. TVmaze per serie, Jikan per anime, TMDB opzionale per film.</p>
+          <div class="searchRow naked">
+            <input id="onlineQuery" type="search" placeholder="Titolo da cercare…">
+            <select id="onlineType">
+              <option value="series">Serie</option>
+              <option value="anime">Anime</option>
+              <option value="movie">Film</option>
+            </select>
+            <button id="onlineSearchBtn" class="primary">Cerca</button>
+          </div>
+          <details class="tmdbBox">
+            <summary>TMDB API key per i film</summary>
+            <input id="tmdbKey" type="password" placeholder="Incolla API key TMDB v3">
+            <p class="muted tiny">Salvata solo nel browser. Senza key puoi aggiungere film manualmente.</p>
+          </details>
+          <div id="onlineResults" class="results"></div>
+        </div>
+
+        <div class="card formCard">
+          <h2>Inserimento manuale</h2>
+          <div class="manualGrid">
+            <input id="manualTitle" placeholder="Titolo">
+            <select id="manualKind"><option value="series">Serie/anime</option><option value="movie">Film</option></select>
+            <input id="manualYear" placeholder="Anno" inputmode="numeric">
+            <button id="manualAddBtn" class="secondary">Aggiungi</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="toolsView" class="view">
+        <div class="card formCard">
+          <h2>Backup / ponte Refract</h2>
+          <p>Esporta un JSON pulito con libreria, episodi e visioni temporanee. È il file da conservare e riconvertire quando Refract torna stabile.</p>
+          <div class="buttonRow">
+            <button id="exportJsonBtn" class="primary">Scarica JSON</button>
+            <button id="exportCsvBtn" class="secondary">Scarica CSV film</button>
+            <button id="wipeBtn" class="danger">Svuota app</button>
+          </div>
+          <pre id="logBox" class="log">Pronto.</pre>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="detailSheet" class="sheet hidden" role="dialog" aria-modal="true">
+    <div class="sheetPanel">
+      <button id="closeSheet" class="sheetClose">×</button>
+      <div id="detailContent"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
