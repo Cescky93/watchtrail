@@ -815,8 +815,9 @@
     let items = [...state.items];
     if (type !== 'all') items = items.filter(i => i.kind === type);
     if (q) items = items.filter(i => (i.search || norm(i.title)).includes(q));
-    items = items.slice(0, 250);
-    $('libraryList').innerHTML = items.length ? items.map(itemHtml).join('') : '<div class="empty">Nessun risultato.</div>';
+    $('libraryList').innerHTML = items.length
+      ? items.map(itemHtml).join('')
+      : '<div class="empty">Nessun risultato.</div>';
   }
 
   function nextEpisode(seriesId) {
