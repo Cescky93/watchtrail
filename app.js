@@ -823,7 +823,36 @@
     return (state.episodes[seriesId] || []).find(e => !e.watched) || null;
   }
 
-  function openDetail(id) {
+
+  function episodeButtonHtml(ep) {
+    const label = `S${numberFrom(ep.season)}E${numberFrom(ep.number)}`;
+    const title = ep.title && !/^Episodio\s+\d+$/i.test(ep.title) ? ep.title : '';
+    const date = ep.watchedAt ? `Visto: ${ep.watchedAt}` : 'Non visto';
+    return `<button class="episode-tile ${ep.watched ? 'is-watched' : ''}" data-ep="${esc(ep.id)}" title="${esc(label + (title ? ' · ' + title : ''))}">
+      <span class="ep-code">${esc(label)}</span>
+      ${title ? `<span class="ep-title">${esc(title)}</span>` : ''}
+      <span class="ep-state">${ep.watched ? '✓ Visto' : date}</span>
+    </button>`;
+  }
+
+  function seasonsForSeries(seriesId) {
+    const eps = state.episodes[seriesId] || [];
+    const grouped = new Map();
+    eps.forEach(e => {
+      const season = numberFrom(e.season);
+      if (!grouped.has(season)) grouped.set(season, []);
+      grouped.get(season).push(e);
+    });
+    return Array.from(grouped.entries())
+      .sort((a, b) => numberFrom(a[0]) - numberFrom(b[0]))
+      .map(([season, arr]) => [season, arr.sort((a, b) => numberFrom(a.number) - numberFrom(b.number))]);
+  }
+
+  function selectedSeasonFromDialog(fallback = 1) {
+    return numberFrom($('seasonPicker')?.value || fallback || 1);
+  }
+
+  function openDetail(id, preferredSeason = null) {
     const item = state.items.find(i => i.id === id);
     if (!item) return;
     const content = $('detailContent');
@@ -842,15 +871,17 @@
       const seenCount = eps.filter(e => e.watched).length;
       const next = nextEpisode(item.id);
       const last = eps.length ? eps[eps.length - 1] : null;
-      const suggestedSeason = next?.season || last?.season || 1;
+      const suggestedSeason = preferredSeason || next?.season || last?.season || 1;
       const suggestedFrom = next?.number || (last ? numberFrom(last.number) + 1 : 1);
       const suggestedTo = suggestedFrom;
-      const grouped = new Map();
-      eps.forEach(e => {
-        const season = numberFrom(e.season);
-        if (!grouped.has(season)) grouped.set(season, []);
-        grouped.get(season).push(e);
-      });
+      const seasons = seasonsForSeries(item.id);
+      const activeSeason = numberFrom(preferredSeason || suggestedSeason || seasons[0]?.[0] || 1);
+      const activeSeasonEpisodes = (state.episodes[item.id] || [])
+        .filter(e => numberFrom(e.season) === activeSeason)
+        .sort((a, b) => numberFrom(a.number) - numberFrom(b.number));
+      const seasonOptions = seasons.length
+        ? seasons.map(([season]) => `<option value="${esc(season)}" ${numberFrom(season) === activeSeason ? 'selected' : ''}>Stagione ${esc(season)}</option>`).join('')
+        : `<option value="${esc(activeSeason)}">Stagione ${esc(activeSeason)}</option>`;
 
       content.innerHTML = `
         <div class="detail-head">
@@ -861,12 +892,25 @@
           ${next ? `<button class="primary" id="markNextBtn">Segna prossimo visto</button>` : ''}
         </div>
 
+        <section class="episode-board-box">
+          <div class="episode-board-head">
+            <div>
+              <h3>Episodi</h3>
+              <p class="hint">Seleziona la stagione e clicca direttamente l'episodio per segnarlo visto/non visto.</p>
+            </div>
+            <select id="seasonPicker" aria-label="Scegli stagione">${seasonOptions}</select>
+          </div>
+          ${activeSeasonEpisodes.length
+            ? `<div class="episode-grid">${activeSeasonEpisodes.map(episodeButtonHtml).join('')}</div>`
+            : '<div class="empty">Nessun episodio salvato per questa stagione. Aggiungili dal box sotto.</div>'}
+        </section>
+
         <section class="continue-series-box">
-          <h3>Continua questa serie</h3>
-          <p class="hint">Aggiunge solo gli episodi mancanti nel database locale. Quelli già presenti o già visti non vengono duplicati o resettati.</p>
+          <h3>Aggiungi episodi mancanti</h3>
+          <p class="hint">Crea nuovi episodi nel database locale della serie. Quelli già presenti non vengono duplicati e quelli già visti restano visti.</p>
           <div class="episode-range-grid">
             <label>Stagione
-              <input id="rangeSeason" type="number" min="0" value="${esc(suggestedSeason)}">
+              <input id="rangeSeason" type="number" min="0" value="${esc(activeSeason || suggestedSeason)}">
             </label>
             <label>Da episodio
               <input id="rangeFrom" type="number" min="1" value="${esc(suggestedFrom)}">
@@ -877,25 +921,25 @@
             <label class="checkline">
               <input id="rangeWatched" type="checkbox"> già visti
             </label>
-            <button class="primary" id="addRangeBtn">+ Aggiungi episodi</button>
+            <button class="primary" id="addRangeBtn">+ Aggiungi</button>
             <button class="ghost" id="markRangeBtn">Segna intervallo visto</button>
           </div>
         </section>
 
-        ${eps.length ? Array.from(grouped.entries())
-          .sort((a, b) => numberFrom(a[0]) - numberFrom(b[0]))
-          .map(([season, arr]) => `<section class="season-block"><h3>Stagione ${esc(season)}</h3>${arr
-            .sort((a, b) => numberFrom(a.number) - numberFrom(b.number))
-            .map(e => `<div class="episode-row ${e.watched ? 'is-watched' : ''}"><div><strong>S${esc(e.season)}E${esc(e.number)}</strong> · ${esc(e.title || '')}<br><small>${e.watchedAt ? `Visto: ${esc(e.watchedAt)}` : 'Non visto'}</small></div><button class="ghost small toggle-ep" data-series="${esc(item.id)}" data-ep="${esc(e.id)}">${e.watched ? '✓ Visto' : 'Segna'}</button></div>`).join('')}</section>`)
-          .join('') : '<div class="empty">Nessun episodio salvato. Usa il box sopra per iniziare la serie.</div>'}
+        ${seasons.length ? `<section class="season-summary"><h3>Tutte le stagioni</h3>${seasons.map(([season, arr]) => {
+          const watched = arr.filter(e => e.watched).length;
+          return `<button class="season-chip ${numberFrom(season) === activeSeason ? 'active' : ''}" data-season="${esc(season)}">S${esc(season)} · ${watched}/${arr.length}</button>`;
+        }).join('')}</section>` : ''}
       `;
 
-      const readRange = () => ({
-        season: numberFrom($('rangeSeason').value),
-        from: numberFrom($('rangeFrom').value),
-        to: numberFrom($('rangeTo').value),
-        watched: $('rangeWatched').checked
-      });
+      const rerenderSameSeason = () => openDetail(id, selectedSeasonFromDialog(activeSeason));
+
+      const seasonPicker = $('seasonPicker');
+      if (seasonPicker) seasonPicker.onchange = () => openDetail(id, numberFrom(seasonPicker.value));
+
+      content.querySelectorAll('.season-chip').forEach(btn => btn.addEventListener('click', () => {
+        openDetail(id, numberFrom(btn.dataset.season));
+      }));
 
       const markNextBtn = $('markNextBtn');
       if (markNextBtn) markNextBtn.onclick = async () => {
@@ -905,9 +949,27 @@
         ep.watchedAt = ep.watchedAt || new Date().toISOString().slice(0, 10);
         await saveState();
         renderAll();
-        openDetail(id);
+        openDetail(id, numberFrom(ep.season));
         log(`${item.title}: segnato visto S${ep.season}E${ep.number}.`);
       };
+
+      content.querySelectorAll('.episode-tile').forEach(btn => btn.addEventListener('click', async () => {
+        const ep = (state.episodes[item.id] || []).find(x => x.id === btn.dataset.ep);
+        if (!ep) return;
+        ep.watched = !ep.watched;
+        ep.watchedAt = ep.watched ? (ep.watchedAt || new Date().toISOString().slice(0, 10)) : '';
+        await saveState();
+        renderAll();
+        openDetail(id, numberFrom(ep.season));
+        log(`${item.title}: S${ep.season}E${ep.number} ${ep.watched ? 'visto' : 'non visto'}.`);
+      }));
+
+      const readRange = () => ({
+        season: numberFrom($('rangeSeason').value),
+        from: numberFrom($('rangeFrom').value),
+        to: numberFrom($('rangeTo').value),
+        watched: $('rangeWatched').checked
+      });
 
       $('addRangeBtn').onclick = async () => {
         try {
@@ -915,7 +977,7 @@
           const result = addEpisodeRangeToSeries(item.id, r.season, r.from, r.to, r.watched);
           await saveState();
           renderAll();
-          openDetail(id);
+          openDetail(id, r.season);
           log(`${item.title}: aggiunti ${result.added}/${result.total} episodi S${r.season}E${r.from}-E${r.to}. Duplicati ignorati: ${result.skipped}.`);
         } catch (err) {
           log(err.message || String(err), 'error');
@@ -930,24 +992,14 @@
           const changed = markEpisodeRange(item.id, r.season, r.from, r.to, true);
           await saveState();
           renderAll();
-          openDetail(id);
+          openDetail(id, r.season);
           log(`${item.title}: intervallo S${r.season}E${r.from}-E${r.to} segnato visto. Creati mancanti: ${result.added}, aggiornati: ${changed}.`);
         } catch (err) {
           log(err.message || String(err), 'error');
         }
       };
-
-      content.querySelectorAll('.toggle-ep').forEach(btn => btn.addEventListener('click', async () => {
-        const ep = (state.episodes[item.id] || []).find(x => x.id === btn.dataset.ep);
-        if (!ep) return;
-        ep.watched = !ep.watched;
-        ep.watchedAt = ep.watched ? (ep.watchedAt || new Date().toISOString().slice(0, 10)) : '';
-        await saveState();
-        renderAll();
-        openDetail(id);
-      }));
     }
-    $('detailDialog').showModal();
+    if (!$('detailDialog').open) $('detailDialog').showModal();
   }
 
   function exportJson() {
