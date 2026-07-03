@@ -2,7 +2,7 @@
   'use strict';
 
   const DB_NAME = 'watchtrail-db';
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;
   const STORE = 'state';
   const TMDB_IMG = 'https://image.tmdb.org/t/p/w185';
 
@@ -12,41 +12,33 @@
     importedAt: null,
     updatedAt: null,
     sourceFiles: [],
+    importReports: []
   };
 
-  const $ = (id) => document.getElementById(id);
-  const logBox = () => $('logBox');
+  const $ = id => document.getElementById(id);
+  const norm = value => String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+  const compact = value => norm(value).replace(/[^a-z0-9]+/g, '');
+  const esc = value => String(value ?? '').replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
+  const uid = (prefix = 'id') => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
 
-  function log(message) {
-    const line = `[${new Date().toLocaleTimeString()}] ${message}`;
-    console.log(line);
-    if (logBox()) logBox().textContent = `${line}\n${logBox().textContent || ''}`.slice(0, 9000);
-  }
-
-  function uid(prefix = 'id') {
-    return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  }
-
-  function norm(s) {
-    return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
-  }
-
-  function escapeHtml(s) {
-    return String(s ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
-  }
-
-  function download(name, mime, content) {
-    const blob = content instanceof Blob ? content : new Blob([content], { type: mime });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  function log(message, level = 'info') {
+    const line = `[${new Date().toLocaleTimeString('it-IT')}] ${message}`;
+    console[level === 'error' ? 'error' : 'log'](line);
+    const box = $('logBox');
+    if (box) box.textContent = `${line}\n${box.textContent || ''}`.slice(0, 20000);
   }
 
   function openDb() {
     return new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
-      req.onupgradeneeded = () => req.result.createObjectStore(STORE);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+      };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
     });
@@ -58,7 +50,8 @@
     await new Promise((resolve, reject) => {
       const tx = db.transaction(STORE, 'readwrite');
       tx.objectStore(STORE).put(JSON.parse(JSON.stringify(state)), 'state');
-      tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
     });
     db.close();
   }
@@ -75,37 +68,84 @@
     if (saved && Array.isArray(saved.items)) {
       Object.assign(state, saved);
       state.episodes = state.episodes || {};
+      state.sourceFiles = state.sourceFiles || [];
+      state.importReports = state.importReports || [];
     }
   }
 
   async function wipeState() {
     if (!confirm('Svuotare tutti i dati locali di WatchTrail?')) return;
-    state.items = []; state.episodes = {}; state.sourceFiles = []; state.importedAt = null;
+    state.items = [];
+    state.episodes = {};
+    state.sourceFiles = [];
+    state.importReports = [];
+    state.importedAt = null;
     await saveState();
     renderAll();
     log('Archivio locale svuotato.');
   }
 
+  function download(name, mime, content) {
+    const blob = content instanceof Blob ? content : new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
   function parseCsv(text) {
+    const clean = stripBom(String(text || ''));
+    const delimiter = detectDelimiter(clean);
     const rows = [];
-    let row = [], field = '', quote = false;
-    for (let i = 0; i < text.length; i++) {
-      const ch = text[i], next = text[i + 1];
+    let row = [];
+    let field = '';
+    let quote = false;
+
+    for (let i = 0; i < clean.length; i++) {
+      const ch = clean[i];
+      const next = clean[i + 1];
       if (ch === '"') {
-        if (quote && next === '"') { field += '"'; i++; }
-        else quote = !quote;
-      } else if (ch === ',' && !quote) { row.push(field); field = ''; }
-      else if ((ch === '\n' || ch === '\r') && !quote) {
+        if (quote && next === '"') {
+          field += '"';
+          i++;
+        } else {
+          quote = !quote;
+        }
+      } else if (ch === delimiter && !quote) {
+        row.push(field);
+        field = '';
+      } else if ((ch === '\n' || ch === '\r') && !quote) {
         if (ch === '\r' && next === '\n') i++;
-        row.push(field); field = '';
+        row.push(field);
         if (row.some(v => String(v).trim() !== '')) rows.push(row);
         row = [];
-      } else field += ch;
+        field = '';
+      } else {
+        field += ch;
+      }
     }
-    row.push(field); if (row.some(v => String(v).trim() !== '')) rows.push(row);
+
+    row.push(field);
+    if (row.some(v => String(v).trim() !== '')) rows.push(row);
     if (!rows.length) return [];
-    const headers = rows.shift().map(h => String(h || '').trim());
+
+    const headers = rows.shift().map((h, i) => String(h || `col_${i}`).trim());
     return rows.map(r => Object.fromEntries(headers.map((h, i) => [h, r[i] ?? ''])));
+  }
+
+  function detectDelimiter(text) {
+    const first = text.split(/\r?\n/).find(Boolean) || '';
+    const candidates = [',', ';', '\t', '|'];
+    return candidates.map(d => [d, (first.match(new RegExp(`\\${d}`, 'g')) || []).length])
+      .sort((a, b) => b[1] - a[1])[0][0] || ',';
+  }
+
+  function stripBom(text) {
+    return text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
   }
 
   function getField(obj, candidates) {
@@ -113,273 +153,536 @@
     const keys = Object.keys(obj);
     for (const c of candidates) {
       if (Object.prototype.hasOwnProperty.call(obj, c)) return obj[c];
-      const found = keys.find(k => norm(k) === norm(c));
+      const found = keys.find(k => norm(k) === norm(c) || compact(k) === compact(c));
       if (found) return obj[found];
     }
     return '';
   }
 
+  function getAny(obj, groups) {
+    for (const group of groups) {
+      const value = getField(obj, group);
+      if (value !== undefined && value !== null && String(value).trim() !== '') return value;
+    }
+    return '';
+  }
+
+  function truthy(v) {
+    if (typeof v === 'boolean') return v;
+    if (typeof v === 'number') return v > 0;
+    return ['1', 'true', 'yes', 'y', 'si', 'sì', 'visto', 'vista', 'watched', 'seen', 'completed', 'done'].includes(norm(v));
+  }
+
+  function yearFromDate(v) {
+    const m = String(v || '').match(/(19|20)\d{2}/);
+    return m ? m[0] : '';
+  }
+
+  function numberFrom(v) {
+    const n = Number(String(v ?? '').replace(',', '.').match(/\d+(?:\.\d+)?/)?.[0] || 0);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function titleFromRow(row, fileKind) {
+    const seriesTitle = getAny(row, [
+      ['series_title', 'series name', 'series', 'show name', 'show', 'tv show', 'tv_show_name', 'program name', 'nome serie', 'serie']
+    ]);
+    const movieTitle = getAny(row, [
+      ['movie_title', 'movie', 'film', 'film title', 'titolo film']
+    ]);
+    const generic = getAny(row, [
+      ['title', 'name', 'original title', 'original_name', 'titolo', 'nome']
+    ]);
+    if (fileKind === 'movie') return movieTitle || generic || seriesTitle;
+    if (fileKind === 'episode') return seriesTitle || getAny(row, [['show title', 'parent title']]) || generic;
+    return seriesTitle || movieTitle || generic;
+  }
+
   async function importFiles(fileList) {
     const files = Array.from(fileList || []);
-    if (!files.length) { log('Nessun file selezionato.'); return; }
+    if (!files.length) {
+      log('Nessun file selezionato.');
+      return;
+    }
+
     log(`Import avviato: ${files.map(f => f.name).join(', ')}`);
-    let imported = 0;
+    const before = snapshotCounts();
+    let processed = 0;
+
     for (const file of files) {
       try {
         const lower = file.name.toLowerCase();
         if (lower.endsWith('.zip')) {
           const entries = await unzipFile(file);
+          log(`${file.name}: ZIP aperto, ${entries.length} file utili trovati.`);
           for (const entry of entries) {
             await importNamedText(entry.name, entry.text);
-            imported++;
+            processed++;
           }
         } else {
           await importNamedText(file.name, await file.text());
-          imported++;
+          processed++;
         }
       } catch (err) {
-        log(`ERRORE su ${file.name}: ${err && err.message ? err.message : err}`);
+        log(`ERRORE su ${file.name}: ${err?.message || err}`, 'error');
       }
     }
+
     dedupeAndSort();
     state.importedAt = new Date().toISOString();
+    const after = snapshotCounts();
+    const report = diffCounts(before, after);
+    state.importReports.unshift({ at: state.importedAt, processed, report });
+    state.importReports = state.importReports.slice(0, 20);
     await saveState();
     renderAll();
-    log(`Import completato. File/entry processati: ${imported}.`);
+    log(`Import completato. File/entry processati: ${processed}. Nuovi totali: ${report}.`);
+  }
+
+  async function unzipFile(file) {
+    if (!window.JSZip) {
+      throw new Error('JSZip non caricato. Ricarica la pagina o controlla la connessione al CDN.');
+    }
+    const zip = await JSZip.loadAsync(file);
+    const allowed = /\.(json|csv|txt)$/i;
+    const entries = Object.values(zip.files)
+      .filter(entry => !entry.dir && allowed.test(entry.name) && !entry.name.includes('__MACOSX'));
+
+    if (!entries.length) {
+      throw new Error('Nessun file JSON/CSV/TXT trovato nello ZIP.');
+    }
+
+    const out = [];
+    for (const entry of entries) {
+      try {
+        const text = await entry.async('string');
+        out.push({ name: entry.name, text });
+      } catch (err) {
+        log(`ERRORE estrazione ${entry.name}: ${err?.message || err}`, 'error');
+      }
+    }
+    return out;
   }
 
   async function importNamedText(name, text) {
     const lower = name.toLowerCase();
+    const safeText = stripBom(text);
     state.sourceFiles.push(name);
+
     if (lower.endsWith('.json')) {
-      const data = JSON.parse(text);
+      const data = JSON.parse(safeText);
       importJson(data, name);
-    } else if (lower.endsWith('.csv')) {
-      importCsv(parseCsv(text), name);
-    } else if (lower.endsWith('.html')) {
-      log(`HTML riepilogo rilevato (${name}), tenuto solo come riferimento.`);
+    } else if (lower.endsWith('.csv') || lower.endsWith('.txt')) {
+      const rows = parseCsv(safeText);
+      importCsv(rows, name);
     } else {
-      log(`Formato ignorato: ${name}`);
+      log(`${name}: formato ignorato.`);
     }
   }
 
-  function importJson(data, name) {
-    if (Array.isArray(data)) {
-      const looksMovie = name.toLowerCase().includes('movie');
-      data.forEach(x => looksMovie ? upsertMovie(fromMovieObj(x)) : upsertSeries(fromSeriesObj(x)));
-      log(`${name}: importati array JSON (${data.length}).`);
-      return;
-    }
-    const series = data.series || data.shows || data.tv_shows || data.tvShows || [];
-    const movies = data.movies || data.films || [];
-    if (Array.isArray(series)) series.forEach(x => upsertSeries(fromSeriesObj(x)));
-    if (Array.isArray(movies)) movies.forEach(x => upsertMovie(fromMovieObj(x)));
-    if (!series.length && !movies.length && (data.name || data.title)) {
-      name.toLowerCase().includes('movie') ? upsertMovie(fromMovieObj(data)) : upsertSeries(fromSeriesObj(data));
-    }
-    log(`${name}: JSON letto. Serie ${series.length || 0}, film ${movies.length || 0}.`);
-  }
-
-  function fromSeriesObj(x) {
-    const title = getField(x, ['name','title','series_name','show_name']) || 'Senza titolo';
-    const item = {
-      id: String(getField(x, ['id','uuid','tvtime_id','tvdb_id','thetvdb_id']) || uid('series')),
-      kind: 'series',
-      title,
-      year: getField(x, ['year','start_year','first_air_year']) || yearFromDate(getField(x, ['first_air_date','aired_at','date'])),
-      status: getField(x, ['status','state']) || 'unknown',
-      favorite: Boolean(getField(x, ['favorite','is_favorite','favorited'])),
-      poster: getField(x, ['poster','image','poster_path','cover']) || '',
-      external: {
-        tvtime: getField(x, ['tvtime_id','id']),
-        tvdb: getField(x, ['tvdb_id','thetvdb_id']),
-        imdb: getField(x, ['imdb_id']),
-        tmdb: getField(x, ['tmdb_id'])
-      }
-    };
-    const eps = extractEpisodes(x, item.id, title);
-    if (eps.length) state.episodes[item.id] = mergeEpisodes(state.episodes[item.id] || [], eps);
-    return item;
-  }
-
-  function extractEpisodes(x, seriesId, seriesTitle) {
-    const flat = [];
-    const direct = x.episodes || x.watched_episodes || [];
-    if (Array.isArray(direct)) direct.forEach(ep => flat.push(normalizeEpisode(ep, seriesId, seriesTitle)));
-    const seasons = x.seasons || [];
-    if (Array.isArray(seasons)) {
-      seasons.forEach(season => {
-        const sn = Number(getField(season, ['number','season_number','season'])) || 0;
-        const eps = season.episodes || [];
-        if (Array.isArray(eps)) eps.forEach(ep => flat.push(normalizeEpisode({...ep, season_number: getField(ep,['season_number']) || sn}, seriesId, seriesTitle)));
-      });
-    }
-    return flat.filter(Boolean);
-  }
-
-  function normalizeEpisode(ep, seriesId, seriesTitle) {
-    const s = Number(getField(ep, ['season_number','season','seasonNumber'])) || 0;
-    const e = Number(getField(ep, ['episode_number','number','episode','episodeNumber'])) || 0;
-    if (!s && !e && !getField(ep, ['title','name'])) return null;
-    return {
-      id: String(getField(ep, ['id','uuid']) || `${seriesId}_s${s}_e${e}`),
-      seriesId,
-      seriesTitle,
-      season: s,
-      number: e,
-      title: getField(ep, ['name','title']) || `Episodio ${e}`,
-      watched: Boolean(getField(ep, ['watched','is_watched','seen','viewed']) || getField(ep, ['watched_at','seen_at','viewed_at'])),
-      watchedAt: getField(ep, ['watched_at','seen_at','viewed_at','date']) || '',
-      rewatch: Number(getField(ep, ['rewatch_count','rewatches','rewatch'])) || 0,
-      airdate: getField(ep, ['airdate','air_date','aired_at']) || ''
-    };
-  }
-
-  function fromMovieObj(x) {
-    const title = getField(x, ['title','name','movie_title']) || 'Senza titolo';
-    return {
-      id: String(getField(x, ['id','uuid','imdb_id','tmdb_id','tvtime_id']) || uid('movie')),
-      kind: 'movie',
-      title,
-      year: getField(x, ['year','release_year']) || yearFromDate(getField(x, ['release_date','watched_at','date'])),
-      status: getField(x, ['status']) || (getField(x, ['watched','watched_at','seen_at']) ? 'watched' : 'planned'),
-      favorite: Boolean(getField(x, ['favorite','is_favorite','favorited'])),
-      watched: Boolean(getField(x, ['watched','is_watched','seen']) || getField(x, ['watched_at','seen_at'])),
-      watchedAt: getField(x, ['watched_at','seen_at','viewed_at','date']) || '',
-      rewatch: Number(getField(x, ['rewatch_count','rewatches','rewatch'])) || 0,
-      poster: getField(x, ['poster','image','poster_path','cover']) || '',
-      external: {
-        imdb: getField(x, ['imdb_id']), tmdb: getField(x, ['tmdb_id']), tvtime: getField(x, ['tvtime_id','id'])
-      }
-    };
+  function inferFileKind(name, rows = []) {
+    const lower = norm(name);
+    const headers = rows[0] ? Object.keys(rows[0]).map(compact).join(' ') : '';
+    if (/episode|episod|puntat|watched[-_ ]?episodes|seen[-_ ]?episodes/.test(lower) || /season|episodenumber|episodetitle|seasonnumber/.test(headers)) return 'episode';
+    if (/movie|movies|film/.test(lower) || /imdb|tmdb|movietitle|release/.test(headers)) return 'movie';
+    if (/show|shows|series|serie|anime|watchlist|follow/.test(lower)) return 'series';
+    return 'mixed';
   }
 
   function importCsv(rows, name) {
-    const lower = name.toLowerCase();
-    if (lower.includes('episode')) {
-      const bySeries = new Map();
-      rows.forEach(r => {
-        const title = getField(r, ['Series','Series Name','Show','show_name','series_name','Title']);
-        const idBase = String(getField(r, ['TVDB ID','tvdb_id','series_id']) || norm(title) || uid('series'));
-        const sid = `series_${idBase}`;
-        if (!state.items.some(i => i.id === sid)) upsertSeries({ id: sid, kind:'series', title: title || 'Senza titolo', year:'', status:'unknown', external:{tvdb:idBase} });
-        if (!bySeries.has(sid)) bySeries.set(sid, []);
-        bySeries.get(sid).push({
-          id: `${sid}_s${Number(getField(r, ['Season','season'])) || 0}_e${Number(getField(r, ['Episode','Episode Number','episode'])) || 0}`,
-          seriesId: sid,
-          seriesTitle: title,
-          season: Number(getField(r, ['Season','season'])) || 0,
-          number: Number(getField(r, ['Episode','Episode Number','episode'])) || 0,
-          title: getField(r, ['Episode Title','Name','episode_title','Title']) || '',
-          watched: truthy(getField(r, ['Watched','Seen','watched'])) || Boolean(getField(r, ['Watched At','watched_at','Date'])),
-          watchedAt: getField(r, ['Watched At','watched_at','Date']) || '',
-          rewatch: Number(getField(r, ['Rewatch','Rewatch Count','rewatch'])) || 0,
-          airdate: getField(r, ['Airdate','airdate']) || ''
-        });
-      });
-      bySeries.forEach((eps, sid) => state.episodes[sid] = mergeEpisodes(state.episodes[sid] || [], eps));
-      log(`${name}: episodi CSV ${rows.length}.`);
-    } else if (lower.includes('movie')) {
-      rows.forEach(r => upsertMovie({
-        id: String(getField(r, ['IMDb ID','imdb_id','TMDB ID','id']) || uid('movie')),
-        kind:'movie',
-        title: getField(r, ['Title','Movie','Name']) || 'Senza titolo',
-        year: getField(r, ['Year','Release Year']) || yearFromDate(getField(r, ['Release Date','Date'])),
-        status: truthy(getField(r, ['Watched','Seen'])) || getField(r, ['Watched At','Date']) ? 'watched' : 'planned',
-        watched: truthy(getField(r, ['Watched','Seen'])) || Boolean(getField(r, ['Watched At','Date'])),
-        watchedAt: getField(r, ['Watched At','Date']) || '',
-        rewatch: Number(getField(r, ['Rewatch','Rewatch Count'])) || 0,
-        favorite: truthy(getField(r, ['Favorite'])),
-        external: { imdb: getField(r, ['IMDb ID','imdb_id']), tmdb: getField(r, ['TMDB ID','tmdb_id']) }
-      }));
-      log(`${name}: film CSV ${rows.length}.`);
+    if (!rows.length) {
+      log(`${name}: CSV vuoto o non leggibile.`);
+      return;
+    }
+
+    const kind = inferFileKind(name, rows);
+    let seriesCount = 0;
+    let episodeCount = 0;
+    let movieCount = 0;
+
+    if (kind === 'episode') {
+      const grouped = new Map();
+      for (const row of rows) {
+        const seriesTitle = titleFromRow(row, 'episode') || 'Senza titolo';
+        const sid = seriesIdFromRow(row, seriesTitle);
+        const seriesItem = seriesFromRow(row, sid, seriesTitle);
+        upsertSeries(seriesItem);
+        seriesCount++;
+        const ep = episodeFromRow(row, sid, seriesTitle);
+        if (ep) {
+          if (!grouped.has(sid)) grouped.set(sid, []);
+          grouped.get(sid).push(ep);
+          episodeCount++;
+        }
+      }
+      grouped.forEach((eps, sid) => state.episodes[sid] = mergeEpisodes(state.episodes[sid] || [], eps));
+    } else if (kind === 'movie') {
+      for (const row of rows) {
+        const item = movieFromRow(row);
+        if (item.title && norm(item.title) !== 'senza titolo') {
+          upsertMovie(item);
+          movieCount++;
+        }
+      }
     } else {
-      rows.forEach(r => upsertSeries({
-        id: String(getField(r, ['TVDB ID','tvdb_id','id']) || uid('series')),
-        kind:'series', title: getField(r, ['Title','Name','Series']) || 'Senza titolo',
-        year: getField(r, ['Year']) || '', status: getField(r, ['Status']) || 'unknown', external: { tvdb: getField(r, ['TVDB ID','tvdb_id']) }
-      }));
-      log(`${name}: serie CSV ${rows.length}.`);
+      for (const row of rows) {
+        const maybeSeason = getAny(row, [['season', 'season number', 'season_number', 'stagione']]);
+        const maybeEpisode = getAny(row, [['episode', 'episode number', 'episode_number', 'episodio']]);
+        const hasEpisodeSignals = maybeSeason !== '' || maybeEpisode !== '';
+        const hasMovieSignals = getAny(row, [['imdb id', 'imdb_id', 'tmdb id', 'tmdb_id', 'release date', 'release_date']]) !== '' || /movie|film/.test(norm(getAny(row, [['type', 'kind', 'media type']])));
+
+        if (hasEpisodeSignals) {
+          const seriesTitle = titleFromRow(row, 'episode') || 'Senza titolo';
+          const sid = seriesIdFromRow(row, seriesTitle);
+          upsertSeries(seriesFromRow(row, sid, seriesTitle));
+          const ep = episodeFromRow(row, sid, seriesTitle);
+          if (ep) {
+            state.episodes[sid] = mergeEpisodes(state.episodes[sid] || [], [ep]);
+            episodeCount++;
+          }
+          seriesCount++;
+        } else if (hasMovieSignals) {
+          upsertMovie(movieFromRow(row));
+          movieCount++;
+        } else {
+          const title = titleFromRow(row, 'series') || 'Senza titolo';
+          upsertSeries(seriesFromRow(row, seriesIdFromRow(row, title), title));
+          seriesCount++;
+        }
+      }
+    }
+
+    log(`${name}: CSV letto. Righe ${rows.length}; serie ${seriesCount}; episodi ${episodeCount}; film ${movieCount}.`);
+  }
+
+  function seriesIdFromRow(row, title) {
+    const tvdb = getAny(row, [['tvdb id', 'tvdb_id', 'thetvdb_id', 'series tvdb id']]);
+    const tvtime = getAny(row, [['tv time id', 'tvtime_id', 'tvshow id', 'show id', 'series id', 'id']]);
+    const imdb = getAny(row, [['imdb id', 'imdb_id']]);
+    const stable = tvdb || tvtime || imdb || compact(title);
+    return `series_${stable || uid('series')}`;
+  }
+
+  function seriesFromRow(row, id, knownTitle = '') {
+    const title = knownTitle || titleFromRow(row, 'series') || 'Senza titolo';
+    const date = getAny(row, [['first air date', 'first_air_date', 'start date', 'release date', 'date', 'air date']]);
+    return {
+      id,
+      kind: 'series',
+      title,
+      year: getAny(row, [['year', 'start year', 'first air year']]) || yearFromDate(date),
+      status: getAny(row, [['status', 'state', 'watch status']]) || 'unknown',
+      favorite: truthy(getAny(row, [['favorite', 'favourite', 'is favorite', 'favorited']])),
+      poster: getAny(row, [['poster', 'image', 'poster path', 'cover', 'cover url']]),
+      external: {
+        tvtime: getAny(row, [['tv time id', 'tvtime_id', 'tvshow id', 'show id']]),
+        tvdb: getAny(row, [['tvdb id', 'tvdb_id', 'thetvdb_id']]),
+        imdb: getAny(row, [['imdb id', 'imdb_id']]),
+        tmdb: getAny(row, [['tmdb id', 'tmdb_id']])
+      }
+    };
+  }
+
+  function episodeFromRow(row, seriesId, seriesTitle) {
+    const season = numberFrom(getAny(row, [['season', 'season number', 'season_number', 'stagione']]));
+    const number = numberFrom(getAny(row, [['episode', 'episode number', 'episode_number', 'number', 'episodio']]));
+    const title = getAny(row, [['episode title', 'episode_title', 'episode name', 'episode_name', 'name', 'title', 'titolo episodio']]);
+    if (!season && !number && !title) return null;
+    const watchedAt = getAny(row, [['watched at', 'watched_at', 'seen at', 'seen_at', 'viewed at', 'viewed_at', 'date watched', 'watch date', 'date', 'data']]);
+    return {
+      id: String(getAny(row, [['episode id', 'episode_id', 'id']]) || `${seriesId}_s${season}_e${number}_${compact(title).slice(0, 24)}`),
+      seriesId,
+      seriesTitle,
+      season,
+      number,
+      title: title || `Episodio ${number || '?'}`,
+      watched: truthy(getAny(row, [['watched', 'seen', 'viewed', 'visto']])) || Boolean(watchedAt),
+      watchedAt,
+      rewatch: numberFrom(getAny(row, [['rewatch', 'rewatches', 'rewatch count', 'rewatch_count']])),
+      airdate: getAny(row, [['airdate', 'air date', 'air_date', 'aired at', 'aired_at']])
+    };
+  }
+
+  function movieFromRow(row) {
+    const title = titleFromRow(row, 'movie') || 'Senza titolo';
+    const watchedAt = getAny(row, [['watched at', 'watched_at', 'seen at', 'seen_at', 'viewed at', 'date watched', 'watch date', 'date', 'data']]);
+    const releaseDate = getAny(row, [['release date', 'release_date', 'released', 'date']]);
+    return {
+      id: String(getAny(row, [['imdb id', 'imdb_id', 'tmdb id', 'tmdb_id', 'tv time id', 'tvtime_id', 'id']]) || `movie_${compact(title)}_${yearFromDate(releaseDate)}` || uid('movie')),
+      kind: 'movie',
+      title,
+      year: getAny(row, [['year', 'release year', 'release_year']]) || yearFromDate(releaseDate || watchedAt),
+      status: truthy(getAny(row, [['watched', 'seen', 'viewed', 'visto']])) || Boolean(watchedAt) ? 'watched' : (getAny(row, [['status', 'state']]) || 'planned'),
+      watched: truthy(getAny(row, [['watched', 'seen', 'viewed', 'visto']])) || Boolean(watchedAt),
+      watchedAt,
+      rewatch: numberFrom(getAny(row, [['rewatch', 'rewatches', 'rewatch count', 'rewatch_count']])),
+      favorite: truthy(getAny(row, [['favorite', 'favourite', 'is favorite', 'favorited']])),
+      poster: getAny(row, [['poster', 'image', 'poster path', 'cover', 'cover url']]),
+      external: {
+        imdb: getAny(row, [['imdb id', 'imdb_id']]),
+        tmdb: getAny(row, [['tmdb id', 'tmdb_id']]),
+        tvtime: getAny(row, [['tv time id', 'tvtime_id']])
+      }
+    };
+  }
+
+  function importJson(data, name) {
+    const before = snapshotCounts();
+    consumeJson(data, name, []);
+    const after = snapshotCounts();
+    log(`${name}: JSON letto. ${diffCounts(before, after)}.`);
+  }
+
+  function consumeJson(node, name, path) {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      const kind = inferJsonArrayKind(node, name, path);
+      for (const item of node) consumeJsonRecord(item, kind, name);
+      return;
+    }
+    if (typeof node !== 'object') return;
+
+    const seriesArrays = ['series', 'shows', 'tv_shows', 'tvShows', 'watchlist', 'watched_shows', 'followed_shows'];
+    const movieArrays = ['movies', 'films', 'watched_movies'];
+    const episodeArrays = ['episodes', 'watched_episodes', 'watchedEpisodes'];
+    let used = false;
+
+    for (const key of seriesArrays) {
+      if (Array.isArray(node[key])) {
+        node[key].forEach(x => consumeJsonRecord(x, 'series', name));
+        used = true;
+      }
+    }
+    for (const key of movieArrays) {
+      if (Array.isArray(node[key])) {
+        node[key].forEach(x => consumeJsonRecord(x, 'movie', name));
+        used = true;
+      }
+    }
+    for (const key of episodeArrays) {
+      if (Array.isArray(node[key])) {
+        node[key].forEach(x => consumeJsonRecord(x, 'episode', name));
+        used = true;
+      }
+    }
+
+    if (!used && looksLikeMediaRecord(node)) {
+      consumeJsonRecord(node, inferJsonRecordKind(node, name), name);
+      return;
+    }
+
+    if (!used) {
+      for (const [key, value] of Object.entries(node)) {
+        if (Array.isArray(value) || (value && typeof value === 'object')) consumeJson(value, name, path.concat(key));
+      }
     }
   }
 
-  function truthy(v) { return ['1','true','yes','si','sì','watched','seen'].includes(norm(v)); }
-  function yearFromDate(v) { const m = String(v || '').match(/(19|20)\d{2}/); return m ? m[0] : ''; }
+  function inferJsonArrayKind(arr, name, path) {
+    const joined = norm(`${name} ${path.join(' ')}`);
+    if (/episode|episod|puntat/.test(joined)) return 'episode';
+    if (/movie|film/.test(joined)) return 'movie';
+    if (/show|series|serie|anime|watchlist/.test(joined)) return 'series';
+    const sample = arr.find(x => x && typeof x === 'object') || {};
+    return inferJsonRecordKind(sample, name);
+  }
+
+  function inferJsonRecordKind(obj, name) {
+    const joinedKeys = Object.keys(obj || {}).map(compact).join(' ');
+    const joinedName = norm(name);
+    if (/season|episodenumber|episodetitle|episode/.test(joinedKeys) || /episode|episod/.test(joinedName)) return 'episode';
+    if (/movie|film|imdb|tmdb|releasedate/.test(joinedKeys) || /movie|film/.test(joinedName)) return 'movie';
+    return 'series';
+  }
+
+  function looksLikeMediaRecord(obj) {
+    return Boolean(getAny(obj, [['title', 'name', 'show name', 'series name', 'movie title']])) ||
+      Boolean(getAny(obj, [['season', 'episode', 'season_number', 'episode_number']])) ||
+      Array.isArray(obj.episodes) || Array.isArray(obj.seasons);
+  }
+
+  function consumeJsonRecord(obj, kind, name) {
+    if (!obj || typeof obj !== 'object') return;
+    if (kind === 'movie') {
+      upsertMovie(movieFromObj(obj));
+    } else if (kind === 'episode') {
+      const seriesObj = obj.series || obj.show || obj.tv_show || obj.tvShow || {};
+      const seriesTitle = getAny(obj, [['series_title', 'series name', 'show name', 'show', 'series']]) || getAny(seriesObj, [['title', 'name']]) || titleFromRow(obj, 'episode') || 'Senza titolo';
+      const sid = `series_${getAny(seriesObj, [['tvdb_id', 'id', 'tvtime_id']]) || getAny(obj, [['series_id', 'show_id', 'tvdb_id']]) || compact(seriesTitle)}`;
+      upsertSeries(seriesFromObj(seriesObj.title || seriesObj.name ? seriesObj : { ...obj, title: seriesTitle, name: seriesTitle }, sid));
+      const ep = episodeFromObj(obj, sid, seriesTitle);
+      if (ep) state.episodes[sid] = mergeEpisodes(state.episodes[sid] || [], [ep]);
+    } else {
+      const series = seriesFromObj(obj);
+      upsertSeries(series);
+      const eps = extractEpisodesFromObj(obj, series.id, series.title);
+      if (eps.length) state.episodes[series.id] = mergeEpisodes(state.episodes[series.id] || [], eps);
+    }
+  }
+
+  function seriesFromObj(obj, forcedId = '') {
+    const title = getAny(obj, [['name', 'title', 'series_name', 'show_name', 'original_name', 'original title']]) || 'Senza titolo';
+    const date = getAny(obj, [['first_air_date', 'first air date', 'aired_at', 'date', 'release_date']]);
+    const id = forcedId || String(getAny(obj, [['id', 'uuid', 'tvtime_id', 'tvdb_id', 'thetvdb_id', 'tmdb_id']]) || `series_${compact(title)}` || uid('series'));
+    return {
+      id: id.startsWith('series_') ? id : `series_${id}`,
+      kind: 'series',
+      title,
+      year: getAny(obj, [['year', 'start_year', 'first_air_year']]) || yearFromDate(date),
+      status: getAny(obj, [['status', 'state', 'watch_status']]) || 'unknown',
+      favorite: truthy(getAny(obj, [['favorite', 'is_favorite', 'favorited']])),
+      poster: getAny(obj, [['poster', 'image', 'poster_path', 'cover', 'cover_url']]),
+      external: {
+        tvtime: getAny(obj, [['tvtime_id', 'tv time id', 'id']]),
+        tvdb: getAny(obj, [['tvdb_id', 'thetvdb_id']]),
+        imdb: getAny(obj, [['imdb_id']]),
+        tmdb: getAny(obj, [['tmdb_id']])
+      }
+    };
+  }
+
+  function movieFromObj(obj) {
+    const title = getAny(obj, [['title', 'name', 'movie_title', 'original_title']]) || 'Senza titolo';
+    const watchedAt = getAny(obj, [['watched_at', 'seen_at', 'viewed_at', 'date']]);
+    const releaseDate = getAny(obj, [['release_date', 'released', 'date']]);
+    return {
+      id: String(getAny(obj, [['id', 'uuid', 'imdb_id', 'tmdb_id', 'tvtime_id']]) || `movie_${compact(title)}_${yearFromDate(releaseDate)}` || uid('movie')),
+      kind: 'movie',
+      title,
+      year: getAny(obj, [['year', 'release_year']]) || yearFromDate(releaseDate || watchedAt),
+      status: getAny(obj, [['status']]) || (truthy(getAny(obj, [['watched', 'is_watched', 'seen', 'viewed']])) || Boolean(watchedAt) ? 'watched' : 'planned'),
+      favorite: truthy(getAny(obj, [['favorite', 'is_favorite', 'favorited']])),
+      watched: truthy(getAny(obj, [['watched', 'is_watched', 'seen', 'viewed']])) || Boolean(watchedAt),
+      watchedAt,
+      rewatch: numberFrom(getAny(obj, [['rewatch_count', 'rewatches', 'rewatch']])),
+      poster: getAny(obj, [['poster', 'image', 'poster_path', 'cover', 'cover_url']]),
+      external: {
+        imdb: getAny(obj, [['imdb_id']]),
+        tmdb: getAny(obj, [['tmdb_id']]),
+        tvtime: getAny(obj, [['tvtime_id', 'id']])
+      }
+    };
+  }
+
+  function episodeFromObj(obj, seriesId, seriesTitle) {
+    const season = numberFrom(getAny(obj, [['season_number', 'seasonNumber', 'season', 'stagione']]));
+    const number = numberFrom(getAny(obj, [['episode_number', 'episodeNumber', 'number', 'episode', 'episodio']]));
+    const title = getAny(obj, [['name', 'title', 'episode_title', 'episode name']]);
+    if (!season && !number && !title) return null;
+    const watchedAt = getAny(obj, [['watched_at', 'seen_at', 'viewed_at', 'date']]);
+    return {
+      id: String(getAny(obj, [['id', 'uuid', 'episode_id']]) || `${seriesId}_s${season}_e${number}_${compact(title).slice(0, 24)}`),
+      seriesId,
+      seriesTitle,
+      season,
+      number,
+      title: title || `Episodio ${number || '?'}`,
+      watched: truthy(getAny(obj, [['watched', 'is_watched', 'seen', 'viewed']])) || Boolean(watchedAt),
+      watchedAt,
+      rewatch: numberFrom(getAny(obj, [['rewatch_count', 'rewatches', 'rewatch']])),
+      airdate: getAny(obj, [['airdate', 'air_date', 'aired_at']])
+    };
+  }
+
+  function extractEpisodesFromObj(obj, seriesId, seriesTitle) {
+    const flat = [];
+    const direct = obj.episodes || obj.watched_episodes || obj.watchedEpisodes || [];
+    if (Array.isArray(direct)) direct.forEach(ep => {
+      const normalized = episodeFromObj(ep, seriesId, seriesTitle);
+      if (normalized) flat.push(normalized);
+    });
+
+    const seasons = obj.seasons || [];
+    if (Array.isArray(seasons)) {
+      seasons.forEach(season => {
+        const sn = numberFrom(getAny(season, [['number', 'season_number', 'season']]));
+        const eps = season.episodes || [];
+        if (Array.isArray(eps)) eps.forEach(ep => {
+          const normalized = episodeFromObj({ ...ep, season_number: getAny(ep, [['season_number']]) || sn }, seriesId, seriesTitle);
+          if (normalized) flat.push(normalized);
+        });
+      });
+    }
+    return flat;
+  }
 
   function upsertSeries(item) { upsertItem(item); }
   function upsertMovie(item) { upsertItem(item); }
 
   function upsertItem(item) {
-    if (!item || !item.title) return;
+    if (!item || !item.title || norm(item.title) === 'senza titolo') return;
+    item.id = String(item.id || uid(item.kind));
     item.search = norm(`${item.title} ${item.year || ''}`);
-    const key = item.external?.imdb || item.external?.tmdb || item.external?.tvdb || item.id;
-    const existing = state.items.findIndex(i => i.kind === item.kind && ((key && JSON.stringify(i.external || {}).includes(String(key))) || norm(i.title) === norm(item.title)));
-    if (existing >= 0) state.items[existing] = { ...state.items[existing], ...item, external: { ...(state.items[existing].external || {}), ...(item.external || {}) } };
-    else state.items.push(item);
+    item.external = item.external || {};
+
+    const existing = state.items.findIndex(i => {
+      if (i.kind !== item.kind) return false;
+      const extA = Object.values(i.external || {}).filter(Boolean).map(String);
+      const extB = Object.values(item.external || {}).filter(Boolean).map(String);
+      if (extA.length && extB.some(v => extA.includes(v))) return true;
+      return norm(i.title) === norm(item.title) && (!item.year || !i.year || String(i.year) === String(item.year));
+    });
+
+    if (existing >= 0) {
+      const old = state.items[existing];
+      state.items[existing] = {
+        ...old,
+        ...item,
+        title: old.title || item.title,
+        year: old.year || item.year,
+        poster: item.poster || old.poster,
+        external: { ...(old.external || {}), ...(item.external || {}) }
+      };
+      if (old.id !== item.id && state.episodes[item.id] && !state.episodes[old.id]) {
+        state.episodes[old.id] = state.episodes[item.id].map(ep => ({ ...ep, seriesId: old.id }));
+        delete state.episodes[item.id];
+      }
+    } else {
+      state.items.push(item);
+    }
   }
 
   function mergeEpisodes(oldEps, newEps) {
     const map = new Map();
-    [...oldEps, ...newEps].forEach(ep => {
-      const k = `${ep.season}-${ep.number}-${norm(ep.title)}`;
-      map.set(k, { ...(map.get(k) || {}), ...ep, watched: Boolean((map.get(k) || {}).watched || ep.watched) });
+    [...oldEps, ...newEps].filter(Boolean).forEach(ep => {
+      const key = `${numberFrom(ep.season)}-${numberFrom(ep.number)}-${compact(ep.title)}`;
+      const previous = map.get(key) || {};
+      map.set(key, {
+        ...previous,
+        ...ep,
+        watched: Boolean(previous.watched || ep.watched),
+        watchedAt: previous.watchedAt || ep.watchedAt || ''
+      });
     });
-    return Array.from(map.values()).sort((a,b) => (a.season-b.season) || (a.number-b.number));
+    return Array.from(map.values()).sort((a, b) => (numberFrom(a.season) - numberFrom(b.season)) || (numberFrom(a.number) - numberFrom(b.number)) || String(a.title).localeCompare(String(b.title)));
   }
 
   function dedupeAndSort() {
-    const map = new Map();
-    state.items.forEach(item => {
-      const key = `${item.kind}_${item.external?.imdb || item.external?.tmdb || item.external?.tvdb || norm(item.title)}`;
-      map.set(key, { ...(map.get(key) || {}), ...item });
-    });
-    state.items = Array.from(map.values()).sort((a,b) => a.title.localeCompare(b.title));
+    const oldItems = [...state.items];
+    state.items = [];
+    oldItems.forEach(upsertItem);
+    state.items.sort((a, b) => String(a.title).localeCompare(String(b.title), 'it'));
   }
 
-  async function unzipFile(file) {
-    const buf = await file.arrayBuffer();
-    const bytes = new Uint8Array(buf);
-    const entries = parseZipEntries(bytes);
-    const out = [];
-    for (const e of entries) {
-      if (!/\.(json|csv|html)$/i.test(e.name)) continue;
-      let data = bytes.slice(e.offset, e.offset + e.compressedSize);
-      if (e.method === 0) {
-        // stored
-      } else if (e.method === 8 && 'DecompressionStream' in window) {
-        const ds = new DecompressionStream('deflate-raw');
-        const stream = new Blob([data]).stream().pipeThrough(ds);
-        data = new Uint8Array(await new Response(stream).arrayBuffer());
-      } else {
-        throw new Error(`ZIP compresso non supportato dal browser per ${e.name}. Estrai lo ZIP e importa JSON/CSV.`);
-      }
-      out.push({ name: e.name, text: new TextDecoder('utf-8').decode(data) });
-    }
-    if (!out.length) throw new Error('Nessun JSON/CSV/HTML trovato nello ZIP.');
-    return out;
+  function snapshotCounts() {
+    return {
+      series: state.items.filter(i => i.kind === 'series').length,
+      movies: state.items.filter(i => i.kind === 'movie').length,
+      episodes: Object.values(state.episodes).flat().length,
+      watchedEpisodes: Object.values(state.episodes).flat().filter(e => e.watched).length
+    };
   }
 
-  function parseZipEntries(bytes) {
-    const entries = [];
-    let p = 0;
-    const u16 = o => bytes[o] | (bytes[o+1] << 8);
-    const u32 = o => (bytes[o] | (bytes[o+1] << 8) | (bytes[o+2] << 16) | (bytes[o+3] << 24)) >>> 0;
-    while (p < bytes.length - 30) {
-      if (u32(p) !== 0x04034b50) { p++; continue; }
-      const method = u16(p + 8);
-      const compressedSize = u32(p + 18);
-      const nameLen = u16(p + 26);
-      const extraLen = u16(p + 28);
-      const name = new TextDecoder().decode(bytes.slice(p + 30, p + 30 + nameLen));
-      const offset = p + 30 + nameLen + extraLen;
-      if (!name.endsWith('/')) entries.push({ name, method, compressedSize, offset });
-      p = offset + compressedSize;
-    }
-    return entries;
+  function diffCounts(before, after) {
+    return `serie ${after.series} (${signed(after.series - before.series)}), film ${after.movies} (${signed(after.movies - before.movies)}), episodi ${after.episodes} (${signed(after.episodes - before.episodes)}), episodi visti ${after.watchedEpisodes} (${signed(after.watchedEpisodes - before.watchedEpisodes)})`;
   }
+
+  function signed(n) { return n >= 0 ? `+${n}` : String(n); }
 
   function renderAll() {
-    renderStats(); renderContinue(); renderLibrary();
+    renderStats();
+    renderContinue();
+    renderLibrary();
   }
 
   function renderStats() {
@@ -393,44 +696,54 @@
   }
 
   function posterHtml(item) {
-    const src = item.poster && String(item.poster).startsWith('/') ? TMDB_IMG + item.poster : item.poster;
-    return `<div class="poster">${src ? `<img src="${escapeHtml(src)}" alt="">` : escapeHtml((item.title || '?').slice(0,1).toUpperCase())}</div>`;
+    const raw = item.poster || '';
+    const src = raw && String(raw).startsWith('/') ? TMDB_IMG + raw : raw;
+    if (src) return `<div class="poster"><img src="${esc(src)}" alt=""></div>`;
+    return `<div class="poster">${esc((item.title || '?').slice(0, 1).toUpperCase())}</div>`;
   }
 
-  function itemHtml(item, mode = 'library') {
+  function itemHtml(item) {
     const eps = state.episodes[item.id] || [];
     const seen = item.kind === 'movie' ? (item.watched ? 1 : 0) : eps.filter(e => e.watched).length;
     const total = item.kind === 'movie' ? 1 : eps.length;
     const next = item.kind === 'series' ? nextEpisode(item.id) : null;
-    return `<article class="item" data-id="${escapeHtml(item.id)}">
+    const action = item.kind === 'movie'
+      ? (item.watched ? 'Visto' : 'Segna visto')
+      : (next ? `S${next.season}E${next.number}` : 'Apri');
+
+    return `<article class="card" data-id="${esc(item.id)}">
       ${posterHtml(item)}
-      <div>
-        <h3>${escapeHtml(item.title)}</h3>
+      <div class="card-body">
+        <h3 class="card-title">${esc(item.title)}</h3>
         <div class="meta">
           <span class="pill">${item.kind === 'movie' ? 'Film' : 'Serie/anime'}</span>
-          ${item.year ? `<span class="pill">${escapeHtml(item.year)}</span>` : ''}
+          ${item.year ? `<span class="pill">${esc(item.year)}</span>` : ''}
           <span class="pill">${seen}/${total || '?'}</span>
-          ${item.favorite ? `<span class="pill">★ preferito</span>` : ''}
+          ${item.favorite ? '<span class="pill">★ preferito</span>' : ''}
         </div>
+        <div class="card-actions"><button class="ghost small open-detail" data-id="${esc(item.id)}">${esc(action)}</button></div>
       </div>
-      <button class="secondary nextBtn" data-action="${item.kind === 'movie' ? 'toggleMovie' : 'open'}" data-id="${escapeHtml(item.id)}">${item.kind === 'movie' ? (item.watched ? 'Visto' : 'Segna visto') : (next ? `S${next.season}E${next.number}` : 'Apri')}</button>
     </article>`;
   }
 
   function renderContinue() {
-    const list = $('continueList');
-    const items = state.items.filter(i => i.kind === 'series' && nextEpisode(i.id)).slice(0, 30);
-    list.innerHTML = items.length ? items.map(i => itemHtml(i, 'continue')).join('') : `<div class="empty">Importa TV Time o aggiungi una serie per vedere i prossimi episodi.</div>`;
+    const items = state.items
+      .filter(i => i.kind === 'series' && nextEpisode(i.id))
+      .sort((a, b) => String(a.title).localeCompare(String(b.title), 'it'))
+      .slice(0, 40);
+    $('continueList').innerHTML = items.length
+      ? items.map(itemHtml).join('')
+      : '<div class="empty">Importa TV Time o aggiungi una serie per vedere i prossimi episodi.</div>';
   }
 
   function renderLibrary() {
     const q = norm($('librarySearch')?.value || '');
     const type = $('typeFilter')?.value || 'all';
-    let items = state.items;
+    let items = [...state.items];
     if (type !== 'all') items = items.filter(i => i.kind === type);
     if (q) items = items.filter(i => (i.search || norm(i.title)).includes(q));
-    items = items.slice(0, 120);
-    $('libraryList').innerHTML = items.length ? items.map(i => itemHtml(i)).join('') : `<div class="empty">Nessun risultato.</div>`;
+    items = items.slice(0, 250);
+    $('libraryList').innerHTML = items.length ? items.map(itemHtml).join('') : '<div class="empty">Nessun risultato.</div>';
   }
 
   function nextEpisode(seriesId) {
@@ -442,163 +755,157 @@
     if (!item) return;
     const content = $('detailContent');
     if (item.kind === 'movie') {
-      content.innerHTML = `<h2>${escapeHtml(item.title)}</h2><p class="muted">${escapeHtml(item.year || '')}</p><button class="primary" data-action="toggleMovie" data-id="${escapeHtml(item.id)}">${item.watched ? 'Segna non visto' : 'Segna visto'}</button>`;
+      content.innerHTML = `<h2>${esc(item.title)}</h2><p>${esc(item.year || '')}</p><button class="primary" id="toggleMovieSeen">${item.watched ? 'Segna non visto' : 'Segna visto'}</button>`;
+      $('toggleMovieSeen').onclick = async () => {
+        item.watched = !item.watched;
+        item.status = item.watched ? 'watched' : 'planned';
+        if (item.watched && !item.watchedAt) item.watchedAt = new Date().toISOString().slice(0, 10);
+        await saveState();
+        renderAll();
+        openDetail(id);
+      };
     } else {
       const eps = state.episodes[item.id] || [];
-      const grouped = new Map(); eps.forEach(e => { if (!grouped.has(e.season)) grouped.set(e.season, []); grouped.get(e.season).push(e); });
-      content.innerHTML = `<h2>${escapeHtml(item.title)}</h2><p class="muted">${eps.filter(e=>e.watched).length}/${eps.length} episodi visti</p>` +
-        Array.from(grouped.entries()).map(([s, arr]) => `<div class="season"><h3>Stagione ${s}</h3>${arr.map(e => `<label class="episode"><input type="checkbox" data-action="toggleEpisode" data-series="${escapeHtml(item.id)}" data-episode="${escapeHtml(e.id)}" ${e.watched ? 'checked' : ''}><span>S${e.season}E${e.number} · ${escapeHtml(e.title || '')}</span><span class="meta">${escapeHtml(e.watchedAt || '')}</span></label>`).join('')}</div>`).join('') || `<div class="empty">Nessun episodio importato. Puoi comunque tenerla in libreria.</div>`;
+      const grouped = new Map();
+      eps.forEach(e => {
+        const season = numberFrom(e.season);
+        if (!grouped.has(season)) grouped.set(season, []);
+        grouped.get(season).push(e);
+      });
+      content.innerHTML = `<h2>${esc(item.title)}</h2><p>${eps.filter(e => e.watched).length}/${eps.length} episodi visti</p>` +
+        (eps.length ? Array.from(grouped.entries()).map(([season, arr]) => `<h3>Stagione ${esc(season)}</h3>${arr.map(e => `<div class="episode-row"><div><strong>S${esc(e.season)}E${esc(e.number)}</strong> · ${esc(e.title || '')}<br><small>${e.watchedAt ? `Visto: ${esc(e.watchedAt)}` : ''}</small></div><button class="ghost small toggle-ep" data-series="${esc(item.id)}" data-ep="${esc(e.id)}">${e.watched ? '✓' : 'Segna'}</button></div>`).join('')}`).join('') : '<div class="empty">Nessun episodio importato.</div>');
+      content.querySelectorAll('.toggle-ep').forEach(btn => btn.addEventListener('click', async () => {
+        const ep = (state.episodes[item.id] || []).find(x => x.id === btn.dataset.ep);
+        if (!ep) return;
+        ep.watched = !ep.watched;
+        if (ep.watched && !ep.watchedAt) ep.watchedAt = new Date().toISOString().slice(0, 10);
+        await saveState();
+        renderAll();
+        openDetail(id);
+      }));
     }
-    $('detailSheet').classList.remove('hidden');
-  }
-
-  async function toggleMovie(id) {
-    const item = state.items.find(i => i.id === id); if (!item) return;
-    item.watched = !item.watched; item.status = item.watched ? 'watched' : 'planned'; item.watchedAt = item.watched ? new Date().toISOString().slice(0,10) : '';
-    await saveState(); renderAll(); openDetail(id);
-  }
-
-  async function toggleEpisode(seriesId, episodeId, checked) {
-    const ep = (state.episodes[seriesId] || []).find(e => e.id === episodeId); if (!ep) return;
-    ep.watched = Boolean(checked); ep.watchedAt = checked ? (ep.watchedAt || new Date().toISOString().slice(0,10)) : '';
-    await saveState(); renderAll();
-  }
-
-  async function onlineSearch() {
-    const q = $('onlineQuery').value.trim(); const type = $('onlineType').value;
-    const box = $('onlineResults');
-    if (!q) { box.innerHTML = `<div class="empty">Scrivi un titolo.</div>`; return; }
-    box.innerHTML = `<div class="empty">Ricerca in corso…</div>`;
-    try {
-      let results = [];
-      if (type === 'series') results = await searchTvmaze(q);
-      else if (type === 'anime') results = await searchJikan(q);
-      else results = await searchTmdbMovie(q);
-      box.innerHTML = results.length ? results.map(r => resultHtml(r)).join('') : `<div class="empty">Nessun risultato. Usa inserimento manuale.</div>`;
-    } catch (err) {
-      box.innerHTML = `<div class="empty">Ricerca non riuscita: ${escapeHtml(err.message || err)}</div>`;
-    }
-  }
-
-  async function searchTvmaze(q) {
-    const data = await fetchJson(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(q)}`);
-    return data.slice(0,10).map(x => ({ source:'tvmaze', kind:'series', id:x.show.id, title:x.show.name, year:yearFromDate(x.show.premiered), poster:x.show.image?.medium || '', meta:x.show.type || 'Serie' }));
-  }
-
-  async function searchJikan(q) {
-    const data = await fetchJson(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(q)}&limit=10`);
-    return (data.data || []).map(x => ({ source:'jikan', kind:'series', id:x.mal_id, title:x.title, year:x.year || yearFromDate(x.aired?.from), poster:x.images?.jpg?.image_url || '', meta:`Anime · ${x.episodes || '?'} ep` }));
-  }
-
-  async function searchTmdbMovie(q) {
-    const key = $('tmdbKey').value.trim() || localStorage.getItem('watchtrail_tmdb_key') || '';
-    if (!key) throw new Error('Per i film serve una TMDB API key, oppure aggiungi manualmente.');
-    localStorage.setItem('watchtrail_tmdb_key', key);
-    const data = await fetchJson(`https://api.themoviedb.org/3/search/movie?api_key=${encodeURIComponent(key)}&language=it-IT&query=${encodeURIComponent(q)}`);
-    return (data.results || []).slice(0,10).map(x => ({ source:'tmdb', kind:'movie', id:x.id, title:x.title, year:yearFromDate(x.release_date), poster:x.poster_path ? TMDB_IMG + x.poster_path : '', meta:'Film' }));
-  }
-
-  async function fetchJson(url) {
-    const res = await fetch(url); if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.json();
-  }
-
-  function resultHtml(r) {
-    return `<article class="item"><div class="poster">${r.poster ? `<img src="${escapeHtml(r.poster)}" alt="">` : escapeHtml(r.title.slice(0,1))}</div><div><h3>${escapeHtml(r.title)}</h3><div class="meta"><span class="pill">${escapeHtml(r.meta)}</span>${r.year ? `<span class="pill">${escapeHtml(r.year)}</span>` : ''}</div></div><button class="primary" data-action="addOnline" data-payload="${escapeHtml(JSON.stringify(r))}">Aggiungi</button></article>`;
-  }
-
-  async function addOnline(payload) {
-    const r = typeof payload === 'string' ? JSON.parse(payload) : payload;
-    if (r.kind === 'movie') upsertMovie({ id:`tmdb_${r.id}`, kind:'movie', title:r.title, year:r.year, poster:r.poster, status:'planned', watched:false, external:{tmdb:r.id} });
-    else {
-      const id = `${r.source}_${r.id}`;
-      upsertSeries({ id, kind:'series', title:r.title, year:r.year, poster:r.poster, status:'planned', external:{[r.source]:r.id} });
-      if (r.source === 'tvmaze') {
-        try {
-          const eps = await fetchJson(`https://api.tvmaze.com/shows/${r.id}/episodes`);
-          state.episodes[id] = mergeEpisodes(state.episodes[id] || [], eps.map(e => ({ id:`${id}_${e.id}`, seriesId:id, seriesTitle:r.title, season:e.season, number:e.number, title:e.name, watched:false, watchedAt:'', airdate:e.airdate || '' })));
-        } catch (err) { log(`Episodi TVmaze non caricati: ${err.message || err}`); }
-      } else if (r.source === 'jikan') {
-        const count = Number((r.meta || '').match(/(\d+) ep/)?.[1]) || 0;
-        if (count) state.episodes[id] = Array.from({length: count}, (_, i) => ({ id:`${id}_s1_e${i+1}`, seriesId:id, seriesTitle:r.title, season:1, number:i+1, title:`Episodio ${i+1}`, watched:false, watchedAt:'', airdate:'' }));
-      }
-    }
-    dedupeAndSort(); await saveState(); renderAll(); log(`Aggiunto: ${r.title}`);
-  }
-
-  async function addManual() {
-    const title = $('manualTitle').value.trim(); if (!title) return;
-    const kind = $('manualKind').value; const year = $('manualYear').value.trim();
-    kind === 'movie' ? upsertMovie({id:uid('movie'), kind:'movie', title, year, status:'planned', watched:false}) : upsertSeries({id:uid('series'), kind:'series', title, year, status:'planned'});
-    $('manualTitle').value = ''; $('manualYear').value = '';
-    dedupeAndSort(); await saveState(); renderAll(); log(`Inserito manualmente: ${title}`);
+    $('detailDialog').showModal();
   }
 
   function exportJson() {
-    download(`watchtrail-backup-${new Date().toISOString().slice(0,10)}.json`, 'application/json', JSON.stringify(state, null, 2));
+    const payload = {
+      app: 'WatchTrail',
+      exportedAt: new Date().toISOString(),
+      items: state.items,
+      episodes: state.episodes,
+      sourceFiles: state.sourceFiles,
+      importReports: state.importReports
+    };
+    download(`watchtrail-backup-${new Date().toISOString().slice(0, 10)}.json`, 'application/json', JSON.stringify(payload, null, 2));
   }
 
-  function exportMovieCsv() {
-    const rows = [['Title','Year','WatchedDate','Rewatch','Favorite','IMDb','TMDB']];
-    state.items.filter(i => i.kind === 'movie').forEach(m => rows.push([m.title, m.year || '', m.watchedAt || '', m.rewatch || 0, m.favorite ? 'Yes' : '', m.external?.imdb || '', m.external?.tmdb || '']));
-    const csv = rows.map(r => r.map(v => `"${String(v ?? '').replace(/"/g,'""')}"`).join(',')).join('\n');
-    download(`watchtrail-movies-${new Date().toISOString().slice(0,10)}.csv`, 'text/csv', csv);
+  function exportMoviesCsv() {
+    const movies = state.items.filter(i => i.kind === 'movie');
+    const header = ['Title', 'Year', 'Watched', 'Watched At', 'IMDb ID', 'TMDB ID'];
+    const rows = movies.map(m => [m.title, m.year || '', m.watched ? 'yes' : 'no', m.watchedAt || '', m.external?.imdb || '', m.external?.tmdb || '']);
+    const csv = [header, ...rows].map(row => row.map(csvEscape).join(',')).join('\n');
+    download(`watchtrail-film-${new Date().toISOString().slice(0, 10)}.csv`, 'text/csv;charset=utf-8', csv);
+  }
+
+  function csvEscape(v) {
+    const s = String(v ?? '');
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }
+
+  function addManual() {
+    const title = $('manualTitle').value.trim();
+    if (!title) return;
+    const kind = $('manualKind').value;
+    const year = $('manualYear').value.trim();
+    const item = { id: `${kind}_${compact(title)}_${year || ''}` || uid(kind), kind, title, year, status: kind === 'movie' ? 'planned' : 'unknown', external: {} };
+    kind === 'movie' ? upsertMovie(item) : upsertSeries(item);
+    saveState().then(() => {
+      $('manualTitle').value = '';
+      $('manualYear').value = '';
+      renderAll();
+      log(`Aggiunto manualmente: ${title}`);
+    });
   }
 
   function wireEvents() {
     $('fileInput').addEventListener('change', e => importFiles(e.target.files));
-    $('exportBtn').addEventListener('click', exportJson);
     $('exportJsonBtn').addEventListener('click', exportJson);
-    $('exportCsvBtn').addEventListener('click', exportMovieCsv);
+    $('downloadJsonBtn').addEventListener('click', exportJson);
+    $('downloadMoviesCsvBtn').addEventListener('click', exportMoviesCsv);
     $('wipeBtn').addEventListener('click', wipeState);
+    $('clearLogBtn').addEventListener('click', () => $('logBox').textContent = 'Log pulito.');
+    $('refreshBtn').addEventListener('click', renderAll);
+    $('manualAddBtn').addEventListener('click', addManual);
     $('librarySearch').addEventListener('input', renderLibrary);
     $('typeFilter').addEventListener('change', renderLibrary);
-    $('onlineSearchBtn').addEventListener('click', onlineSearch);
-    $('manualAddBtn').addEventListener('click', addManual);
-    $('refreshContinue').addEventListener('click', renderContinue);
-    $('closeSheet').addEventListener('click', () => $('detailSheet').classList.add('hidden'));
-    document.querySelectorAll('.tab').forEach(btn => btn.addEventListener('click', () => switchView(btn.dataset.view)));
-    document.body.addEventListener('click', async e => {
-      const btn = e.target.closest('[data-action]'); if (!btn) return;
-      const action = btn.dataset.action;
-      if (action === 'open') openDetail(btn.dataset.id || btn.closest('.item')?.dataset.id);
-      if (action === 'toggleMovie') await toggleMovie(btn.dataset.id);
-      if (action === 'addOnline') await addOnline(btn.dataset.payload);
-    });
-    document.body.addEventListener('change', async e => {
-      const el = e.target.closest('[data-action="toggleEpisode"]');
-      if (el) await toggleEpisode(el.dataset.series, el.dataset.episode, el.checked);
-    });
+    $('closeDetail').addEventListener('click', () => $('detailDialog').close());
+
+    document.querySelectorAll('.tab').forEach(btn => btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+      document.querySelectorAll('.tab-page').forEach(x => x.classList.remove('active'));
+      btn.classList.add('active');
+      $(`tab-${btn.dataset.tab}`).classList.add('active');
+    }));
+
     document.body.addEventListener('click', e => {
-      const item = e.target.closest('.item[data-id]');
-      if (item && !e.target.closest('button')) openDetail(item.dataset.id);
+      const btn = e.target.closest('.open-detail');
+      if (btn) openDetail(btn.dataset.id);
+    });
+
+    const dropZone = $('dropZone');
+    ['dragenter', 'dragover'].forEach(eventName => {
+      document.addEventListener(eventName, e => {
+        e.preventDefault();
+        e.stopPropagation();
+        document.body.classList.add('dragging-file');
+        dropZone.classList.add('dragging');
+      });
+    });
+    ['dragleave', 'drop'].forEach(eventName => {
+      document.addEventListener(eventName, e => {
+        e.preventDefault();
+        e.stopPropagation();
+        document.body.classList.remove('dragging-file');
+        dropZone.classList.remove('dragging');
+      });
+    });
+    document.addEventListener('drop', e => {
+      const files = e.dataTransfer?.files;
+      if (!files || !files.length) {
+        log('Drop rilevato, ma nessun file trovato.');
+        return;
+      }
+      log(`File trascinati: ${Array.from(files).map(f => f.name).join(', ')}`);
+      importFiles(files);
     });
   }
 
-  function switchView(view) {
-    document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.view === view));
-    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-    $(`${view}View`).classList.add('active');
-    if (view === 'library') renderLibrary();
-  }
-
-  function setupInstall() {
-    let deferred;
-    window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferred = e; $('installBtn').classList.remove('hidden'); });
-    $('installBtn').addEventListener('click', async () => { if (deferred) { deferred.prompt(); deferred = null; $('installBtn').classList.add('hidden'); } });
-    if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
-  }
-
-  async function init() {
-    try {
-      wireEvents(); setupInstall();
-      const key = localStorage.getItem('watchtrail_tmdb_key'); if (key) $('tmdbKey').value = key;
-      await loadState(); renderAll(); log('WatchTrail avviato.');
-    } catch (err) {
-      document.body.insertAdjacentHTML('afterbegin', `<div style="padding:16px;background:#ff5573;color:white">Errore avvio: ${escapeHtml(err.message || err)}</div>`);
-      console.error(err);
+  function registerPwa() {
+    let deferredPrompt = null;
+    window.addEventListener('beforeinstallprompt', e => {
+      e.preventDefault();
+      deferredPrompt = e;
+      $('installBtn').hidden = false;
+    });
+    $('installBtn').addEventListener('click', async () => {
+      if (!deferredPrompt) return;
+      deferredPrompt.prompt();
+      await deferredPrompt.userChoice;
+      deferredPrompt = null;
+      $('installBtn').hidden = true;
+    });
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./sw.js').catch(err => log(`Service worker non registrato: ${err.message || err}`));
     }
   }
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
-  else init();
+  async function init() {
+    wireEvents();
+    registerPwa();
+    await loadState();
+    renderAll();
+    log('WatchTrail pronto. Import supportato: ZIP, CSV, JSON.');
+  }
+
+  init().catch(err => log(`Errore avvio: ${err?.message || err}`, 'error'));
 })();
