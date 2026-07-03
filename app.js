@@ -780,11 +780,9 @@
     const seen = item.kind === 'movie' ? (item.watched ? 1 : 0) : eps.filter(e => e.watched).length;
     const total = item.kind === 'movie' ? 1 : eps.length;
     const next = item.kind === 'series' ? nextEpisode(item.id) : null;
-    const action = item.kind === 'movie'
-      ? (item.watched ? 'Visto' : 'Segna visto')
-      : (next ? `S${next.season}E${next.number}` : 'Apri');
+    const nextLabel = item.kind === 'series' && next ? `Prossimo S${next.season}E${next.number}` : '';
 
-    return `<article class="card" data-id="${esc(item.id)}">
+    return `<article class="card open-detail-card" data-id="${esc(item.id)}" tabindex="0" role="button" aria-label="Apri e modifica ${esc(item.title)}">
       ${posterHtml(item)}
       <div class="card-body">
         <h3 class="card-title">${esc(item.title)}</h3>
@@ -793,8 +791,11 @@
           ${item.year ? `<span class="pill">${esc(item.year)}</span>` : ''}
           <span class="pill">${seen}/${total || '?'}</span>
           ${item.favorite ? '<span class="pill">★ preferito</span>' : ''}
+          ${nextLabel ? `<span class="pill">${esc(nextLabel)}</span>` : ''}
         </div>
-        <div class="card-actions"><button class="ghost small open-detail" data-id="${esc(item.id)}">${esc(action)}</button></div>
+        <div class="card-actions">
+          <button class="primary small open-detail" data-id="${esc(item.id)}">Apri / modifica</button>
+        </div>
       </div>
     </article>`;
   }
@@ -1228,8 +1229,19 @@
     }));
 
     document.body.addEventListener('click', e => {
-      const btn = e.target.closest('.open-detail');
-      if (btn) openDetail(btn.dataset.id);
+      const target = e.target.closest('.open-detail, .open-detail-card');
+      if (!target) return;
+      const id = target.dataset.id || target.closest('[data-id]')?.dataset.id;
+      if (id) openDetail(id);
+    });
+
+    document.body.addEventListener('keydown', e => {
+      const card = e.target.closest?.('.open-detail-card');
+      if (!card) return;
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openDetail(card.dataset.id);
+      }
     });
 
     const dropZone = $('dropZone');
