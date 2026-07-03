@@ -1,4 +1,4 @@
-const CACHE_NAME = 'watchtrail-v20260703-zip-import';
+const CACHE_NAME = 'watchtrail-v30260703-zip-import';
 const ASSETS = [
   './',
   './index.html',
