@@ -1,4 +1,4 @@
-const CACHE_NAME = 'watchtrail-v60260703-visible-edit';
+const CACHE_NAME = 'watchtrail-v20260706-refract-export-v7';
 const ASSETS = [
   './',
   './index.html',

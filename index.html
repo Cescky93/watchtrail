@@ -33,7 +33,7 @@
           Importa TV Time
           <input id="fileInput" type="file" multiple accept=".zip,.csv,.json,.txt,application/zip,text/csv,application/json" />
         </label>
-        <button id="exportJsonBtn" class="ghost">Esporta backup</button>
+        <button id="exportJsonBtn" class="ghost">Backup WatchTrail</button>
       </div>
       <div class="drop-hint">Rilascia qui file .zip, .csv o .json</div>
     </section>
@@ -92,11 +92,28 @@
 
     <section class="tab-page" id="tab-backup">
       <div class="panel">
-        <h2>Backup / ponte Refract</h2>
-        <p>Esporta un JSON pulito con libreria, episodi e sorgenti importate. È il file da conservare e riconvertire quando serve.</p>
+        <h2>Backup WatchTrail</h2>
+        <p>Questo è il backup interno della PWA: serve per salvare e ricaricare WatchTrail senza perdere modifiche manuali.</p>
         <div class="actions wrap">
-          <button id="downloadJsonBtn" class="primary">Scarica JSON</button>
+          <button id="downloadJsonBtn" class="primary">Scarica backup WatchTrail</button>
           <button id="downloadMoviesCsvBtn" class="ghost">Scarica CSV film</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Export compatibile TV Time / Refract</h2>
+        <p>Genera file con nomi e struttura stile TV Time Out: serie, film e liste. È il formato da provare su Refract quando l'import torna stabile.</p>
+        <div class="actions wrap">
+          <button id="downloadRefractZipBtn" class="primary">Scarica ZIP Refract</button>
+          <button id="downloadRefractSeriesBtn" class="ghost">JSON serie</button>
+          <button id="downloadRefractMoviesBtn" class="ghost">JSON film</button>
+          <button id="downloadRefractListsBtn" class="ghost">JSON liste vuote</button>
+        </div>
+      </div>
+
+      <div class="panel danger-zone">
+        <h2>Manutenzione</h2>
+        <div class="actions wrap">
           <button id="clearLogBtn" class="ghost">Pulisci log</button>
           <button id="wipeBtn" class="danger">Svuota app</button>
         </div>

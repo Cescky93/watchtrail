@@ -2,7 +2,7 @@
   'use strict';
 
   const DB_NAME = 'watchtrail-db';
-  const DB_VERSION = 2;
+  const DB_VERSION = 3;
   const STORE = 'state';
   const TMDB_IMG = 'https://image.tmdb.org/t/p/w185';
 
@@ -642,92 +642,19 @@
     }
   }
 
-  function episodeKey(ep) {
-    return `${numberFrom(ep.season)}-${numberFrom(ep.number)}`;
-  }
-
-  function makeEpisode(series, season, number, options = {}) {
-    return {
-      id: `${series.id}_s${numberFrom(season)}_e${numberFrom(number)}`,
-      seriesId: series.id,
-      seriesTitle: series.title,
-      season: numberFrom(season),
-      number: numberFrom(number),
-      title: options.title || `Episodio ${numberFrom(number)}`,
-      watched: Boolean(options.watched),
-      watchedAt: options.watchedAt || (options.watched ? new Date().toISOString().slice(0, 10) : ''),
-      rewatch: options.rewatch || 0,
-      airdate: options.airdate || ''
-    };
-  }
-
   function mergeEpisodes(oldEps, newEps) {
     const map = new Map();
     [...oldEps, ...newEps].filter(Boolean).forEach(ep => {
-      const normalized = {
-        ...ep,
-        season: numberFrom(ep.season),
-        number: numberFrom(ep.number)
-      };
-      const key = episodeKey(normalized);
+      const key = `${numberFrom(ep.season)}-${numberFrom(ep.number)}-${compact(ep.title)}`;
       const previous = map.get(key) || {};
       map.set(key, {
         ...previous,
-        ...normalized,
-        id: previous.id || normalized.id,
-        title: previous.title || normalized.title || `Episodio ${numberFrom(normalized.number)}`,
-        watched: Boolean(previous.watched || normalized.watched),
-        watchedAt: previous.watchedAt || normalized.watchedAt || ''
+        ...ep,
+        watched: Boolean(previous.watched || ep.watched),
+        watchedAt: previous.watchedAt || ep.watchedAt || ''
       });
     });
     return Array.from(map.values()).sort((a, b) => (numberFrom(a.season) - numberFrom(b.season)) || (numberFrom(a.number) - numberFrom(b.number)) || String(a.title).localeCompare(String(b.title)));
-  }
-
-  function addEpisodeRangeToSeries(seriesId, season, from, to, watched = false) {
-    const series = state.items.find(i => i.id === seriesId && i.kind === 'series');
-    if (!series) return { added: 0, skipped: 0, total: 0 };
-
-    season = numberFrom(season);
-    from = numberFrom(from);
-    to = numberFrom(to);
-
-    if ((!season && season !== 0) || !from || !to || to < from) {
-      throw new Error('Intervallo episodi non valido. Controlla stagione, episodio iniziale e finale.');
-    }
-
-    const existing = new Set((state.episodes[series.id] || []).map(episodeKey));
-    const created = [];
-    let skipped = 0;
-
-    for (let n = from; n <= to; n++) {
-      const candidate = makeEpisode(series, season, n, { watched });
-      if (existing.has(episodeKey(candidate))) {
-        skipped++;
-        continue;
-      }
-      created.push(candidate);
-    }
-
-    state.episodes[series.id] = mergeEpisodes(state.episodes[series.id] || [], created);
-    return { added: created.length, skipped, total: to - from + 1 };
-  }
-
-  function markEpisodeRange(seriesId, season, from, to, watched = true) {
-    const eps = state.episodes[seriesId] || [];
-    season = numberFrom(season);
-    from = numberFrom(from);
-    to = numberFrom(to);
-    let changed = 0;
-    eps.forEach(ep => {
-      const epSeason = numberFrom(ep.season);
-      const epNumber = numberFrom(ep.number);
-      if (epSeason === season && epNumber >= from && epNumber <= to) {
-        if (ep.watched !== watched) changed++;
-        ep.watched = watched;
-        ep.watchedAt = watched ? (ep.watchedAt || new Date().toISOString().slice(0, 10)) : '';
-      }
-    });
-    return changed;
   }
 
   function dedupeAndSort() {
@@ -780,9 +707,9 @@
     const seen = item.kind === 'movie' ? (item.watched ? 1 : 0) : eps.filter(e => e.watched).length;
     const total = item.kind === 'movie' ? 1 : eps.length;
     const next = item.kind === 'series' ? nextEpisode(item.id) : null;
-    const nextLabel = item.kind === 'series' && next ? `Prossimo S${next.season}E${next.number}` : '';
+    const action = 'Apri / modifica';
 
-    return `<article class="card open-detail-card" data-id="${esc(item.id)}" tabindex="0" role="button" aria-label="Apri e modifica ${esc(item.title)}">
+    return `<article class="card" data-id="${esc(item.id)}">
       ${posterHtml(item)}
       <div class="card-body">
         <h3 class="card-title">${esc(item.title)}</h3>
@@ -791,11 +718,8 @@
           ${item.year ? `<span class="pill">${esc(item.year)}</span>` : ''}
           <span class="pill">${seen}/${total || '?'}</span>
           ${item.favorite ? '<span class="pill">★ preferito</span>' : ''}
-          ${nextLabel ? `<span class="pill">${esc(nextLabel)}</span>` : ''}
         </div>
-        <div class="card-actions">
-          <button class="primary small open-detail" data-id="${esc(item.id)}">Apri / modifica</button>
-        </div>
+        <div class="card-actions"><button class="ghost small open-detail" data-id="${esc(item.id)}">${esc(action)}</button></div>
       </div>
     </article>`;
   }
@@ -816,356 +740,209 @@
     let items = [...state.items];
     if (type !== 'all') items = items.filter(i => i.kind === type);
     if (q) items = items.filter(i => (i.search || norm(i.title)).includes(q));
-    $('libraryList').innerHTML = items.length
-      ? items.map(itemHtml).join('')
-      : '<div class="empty">Nessun risultato.</div>';
+    $('libraryList').innerHTML = items.length ? items.map(itemHtml).join('') : '<div class="empty">Nessun risultato.</div>';
   }
 
   function nextEpisode(seriesId) {
     return (state.episodes[seriesId] || []).find(e => !e.watched) || null;
   }
 
-
-  function episodeButtonHtml(ep) {
-    const label = `S${numberFrom(ep.season)}E${numberFrom(ep.number)}`;
-    const title = ep.title && !/^Episodio\s+\d+$/i.test(ep.title) ? ep.title : '';
-    const date = ep.watchedAt ? `Visto: ${ep.watchedAt}` : 'Non visto';
-    return `<div class="episode-card ${ep.watched ? 'is-watched' : ''}">
-      <button class="episode-tile ${ep.watched ? 'is-watched' : ''}" data-ep="${esc(ep.id)}" title="${esc(label + (title ? ' · ' + title : ''))}">
-        <span class="ep-code">${esc(label)}</span>
-        ${title ? `<span class="ep-title">${esc(title)}</span>` : ''}
-        <span class="ep-state">${ep.watched ? '✓ Visto' : date}</span>
-      </button>
-      <div class="ep-tools">
-        <button class="ghost tiny edit-ep" data-ep="${esc(ep.id)}" title="Modifica episodio">✎</button>
-        <button class="danger tiny delete-ep" data-ep="${esc(ep.id)}" title="Elimina episodio">×</button>
-      </div>
-    </div>`;
-  }
-
-  function seasonsForSeries(seriesId) {
-    const eps = state.episodes[seriesId] || [];
-    const grouped = new Map();
-    eps.forEach(e => {
-      const season = numberFrom(e.season);
-      if (!grouped.has(season)) grouped.set(season, []);
-      grouped.get(season).push(e);
-    });
-    return Array.from(grouped.entries())
-      .sort((a, b) => numberFrom(a[0]) - numberFrom(b[0]))
-      .map(([season, arr]) => [season, arr.sort((a, b) => numberFrom(a.number) - numberFrom(b.number))]);
-  }
-
-  function selectedSeasonFromDialog(fallback = 1) {
-    return numberFrom($('seasonPicker')?.value || fallback || 1);
-  }
-
-  async function saveItemEdits(item) {
-    const oldTitle = item.title;
-    const newTitle = $('editItemTitle')?.value.trim() || item.title;
-    const newYear = $('editItemYear')?.value.trim() || '';
-    item.title = newTitle;
-    item.year = newYear;
-    item.favorite = Boolean($('editItemFavorite')?.checked);
-    item.search = norm(`${item.title} ${item.year || ''}`);
-    if (item.kind === 'series') {
-      (state.episodes[item.id] || []).forEach(ep => {
-        ep.seriesTitle = item.title;
-      });
-    }
-    await saveState();
-    renderAll();
-    openDetail(item.id, selectedSeasonFromDialog(1));
-    log(`Scheda aggiornata: ${oldTitle} → ${item.title}.`);
-  }
-
-  async function deleteItem(item) {
-    const label = item.kind === 'movie' ? 'film' : 'serie';
-    if (!confirm(`Eliminare definitivamente ${label} "${item.title}" dal database locale?`)) return;
-    state.items = state.items.filter(i => i.id !== item.id);
-    if (item.kind === 'series') delete state.episodes[item.id];
-    await saveState();
-    renderAll();
-    $('detailDialog')?.close();
-    log(`Eliminato: ${item.title}.`);
-  }
-
-  async function editEpisode(seriesId, episodeId) {
-    const eps = state.episodes[seriesId] || [];
-    const ep = eps.find(e => e.id === episodeId);
-    if (!ep) return;
-
-    const season = prompt('Stagione', String(numberFrom(ep.season)));
-    if (season === null) return;
-    const number = prompt('Episodio', String(numberFrom(ep.number)));
-    if (number === null) return;
-    const title = prompt('Titolo episodio', ep.title || '');
-    if (title === null) return;
-    const watchedAt = prompt('Data visto, opzionale YYYY-MM-DD', ep.watchedAt || '');
-    if (watchedAt === null) return;
-
-    const newSeason = numberFrom(season);
-    const newNumber = numberFrom(number);
-    if ((!newSeason && newSeason !== 0) || !newNumber) {
-      log('Stagione o episodio non validi.', 'error');
-      return;
-    }
-
-    const duplicate = eps.find(e => e.id !== ep.id && numberFrom(e.season) === newSeason && numberFrom(e.number) === newNumber);
-    if (duplicate && !confirm(`Esiste già S${newSeason}E${newNumber}. Vuoi comunque sovrascrivere questo episodio?`)) return;
-
-    ep.season = newSeason;
-    ep.number = newNumber;
-    ep.title = title.trim() || `Episodio ${newNumber}`;
-    ep.watchedAt = watchedAt.trim();
-    ep.watched = Boolean(ep.watchedAt) || ep.watched;
-    ep.id = `${seriesId}_s${newSeason}_e${newNumber}`;
-
-    state.episodes[seriesId] = mergeEpisodes(eps, []);
-    await saveState();
-    renderAll();
-    openDetail(seriesId, newSeason);
-    log(`Episodio modificato: S${newSeason}E${newNumber}.`);
-  }
-
-  async function deleteEpisode(seriesId, episodeId) {
-    const eps = state.episodes[seriesId] || [];
-    const ep = eps.find(e => e.id === episodeId);
-    if (!ep) return;
-    if (!confirm(`Eliminare S${ep.season}E${ep.number} dal database locale?`)) return;
-    state.episodes[seriesId] = eps.filter(e => e.id !== episodeId);
-    await saveState();
-    renderAll();
-    openDetail(seriesId, numberFrom(ep.season));
-    log(`Episodio eliminato: S${ep.season}E${ep.number}.`);
-  }
-
-  function openDetail(id, preferredSeason = null) {
+  function openDetail(id) {
     const item = state.items.find(i => i.id === id);
     if (!item) return;
     const content = $('detailContent');
 
     if (item.kind === 'movie') {
       content.innerHTML = `
-        <div class="detail-head">
-          <div>
-            <h2>${esc(item.title)}</h2>
-            <p>${esc(item.year || '')} ${item.watched ? '· visto' : '· non visto'}</p>
-          </div>
-          <button class="danger" id="deleteItemBtn">Elimina</button>
-        </div>
-
-        <section class="edit-box">
+        <h2>${esc(item.title)}</h2>
+        <div class="edit-box">
           <h3>Modifica scheda</h3>
-          <div class="edit-grid">
-            <label>Titolo
-              <input id="editItemTitle" value="${esc(item.title)}">
-            </label>
-            <label>Anno
-              <input id="editItemYear" value="${esc(item.year || '')}" inputmode="numeric">
-            </label>
-            <label class="checkline">
-              <input id="editItemFavorite" type="checkbox" ${item.favorite ? 'checked' : ''}> preferito
-            </label>
+          <div class="form-grid detail-grid">
+            <label>Titolo<input id="editTitle" value="${esc(item.title)}"></label>
+            <label>Anno<input id="editYear" value="${esc(item.year || '')}" inputmode="numeric"></label>
+            <label>Data visto<input id="editWatchedAt" value="${esc(item.watchedAt || '')}" placeholder="YYYY-MM-DD"></label>
+            <label class="checkline"><input id="editFavorite" type="checkbox" ${item.favorite ? 'checked' : ''}> Preferito</label>
+          </div>
+          <div class="actions wrap detail-actions">
             <button class="primary" id="saveItemBtn">Salva modifiche</button>
+            <button class="ghost" id="toggleMovieSeen">${item.watched ? 'Segna non visto' : 'Segna visto'}</button>
+            <button class="danger" id="deleteItemBtn">Elimina film</button>
           </div>
-        </section>
+        </div>`;
 
-        <section class="edit-box">
-          <h3>Stato film</h3>
-          <div class="edit-grid compact-edit-grid">
-            <label>Data visto
-              <input id="movieWatchedAt" type="date" value="${esc((item.watchedAt || '').slice(0, 10))}">
-            </label>
-            <button class="primary" id="toggleMovieSeen">${item.watched ? 'Segna non visto' : 'Segna visto'}</button>
-            <button class="ghost" id="saveMovieDateBtn">Salva data</button>
-          </div>
-        </section>
-      `;
-
-      $('saveItemBtn').onclick = () => saveItemEdits(item);
-      $('deleteItemBtn').onclick = () => deleteItem(item);
+      $('saveItemBtn').onclick = async () => {
+        item.title = $('editTitle').value.trim() || item.title;
+        item.year = $('editYear').value.trim();
+        item.watchedAt = $('editWatchedAt').value.trim();
+        item.favorite = $('editFavorite').checked;
+        item.search = norm(`${item.title} ${item.year || ''}`);
+        await saveState();
+        renderAll();
+        openDetail(id);
+        log(`Modificato film: ${item.title}`);
+      };
       $('toggleMovieSeen').onclick = async () => {
         item.watched = !item.watched;
         item.status = item.watched ? 'watched' : 'planned';
-        item.watchedAt = item.watched ? (item.watchedAt || new Date().toISOString().slice(0, 10)) : '';
+        if (item.watched && !item.watchedAt) item.watchedAt = new Date().toISOString().slice(0, 10);
         await saveState();
         renderAll();
         openDetail(id);
       };
-      $('saveMovieDateBtn').onclick = async () => {
-        item.watchedAt = $('movieWatchedAt').value || '';
-        item.watched = Boolean(item.watchedAt);
-        item.status = item.watched ? 'watched' : 'planned';
+      $('deleteItemBtn').onclick = async () => {
+        if (!confirm(`Eliminare definitivamente "${item.title}" da WatchTrail?`)) return;
+        state.items = state.items.filter(x => x.id !== item.id);
+        delete state.episodes[item.id];
         await saveState();
         renderAll();
-        openDetail(id);
-        log(`${item.title}: data visione aggiornata.`);
+        $('detailDialog').close();
+        log(`Eliminato film: ${item.title}`);
       };
     } else {
       const eps = state.episodes[item.id] || [];
-      const seenCount = eps.filter(e => e.watched).length;
-      const next = nextEpisode(item.id);
-      const last = eps.length ? eps[eps.length - 1] : null;
-      const suggestedSeason = preferredSeason || next?.season || last?.season || 1;
-      const suggestedFrom = next?.number || (last ? numberFrom(last.number) + 1 : 1);
-      const suggestedTo = suggestedFrom;
-      const seasons = seasonsForSeries(item.id);
-      const activeSeason = numberFrom(preferredSeason || suggestedSeason || seasons[0]?.[0] || 1);
-      const activeSeasonEpisodes = (state.episodes[item.id] || [])
-        .filter(e => numberFrom(e.season) === activeSeason)
-        .sort((a, b) => numberFrom(a.number) - numberFrom(b.number));
-      const seasonOptions = seasons.length
-        ? seasons.map(([season]) => `<option value="${esc(season)}" ${numberFrom(season) === activeSeason ? 'selected' : ''}>Stagione ${esc(season)}</option>`).join('')
-        : `<option value="${esc(activeSeason)}">Stagione ${esc(activeSeason)}</option>`;
+      const grouped = new Map();
+      eps.forEach(e => {
+        const season = numberFrom(e.season);
+        if (!grouped.has(season)) grouped.set(season, []);
+        grouped.get(season).push(e);
+      });
+      const seasonsHtml = Array.from(grouped.entries())
+        .sort((a, b) => numberFrom(a[0]) - numberFrom(b[0]))
+        .map(([season, arr]) => `<h3>Stagione ${esc(season)}</h3>${arr
+          .sort((a, b) => numberFrom(a.number) - numberFrom(b.number))
+          .map(e => `<div class="episode-row ${e.watched ? 'watched' : ''}" data-ep-row="${esc(e.id)}">
+            <button class="episode-main" data-ep="${esc(e.id)}" title="Segna visto/non visto">
+              <strong>S${esc(e.season)}E${esc(e.number)}</strong> · ${esc(e.title || '')}
+              <br><small>${e.watched ? '✓ Visto' : 'Non visto'}${e.watchedAt ? ` · ${esc(e.watchedAt)}` : ''}</small>
+            </button>
+            <div class="episode-tools">
+              <button class="ghost small edit-ep" data-ep="${esc(e.id)}">✎</button>
+              <button class="danger small delete-ep" data-ep="${esc(e.id)}">×</button>
+            </div>
+          </div>`).join('')}`).join('');
 
       content.innerHTML = `
-        <div class="detail-head">
-          <div>
-            <h2>${esc(item.title)}</h2>
-            <p>${seenCount}/${eps.length} episodi visti${next ? ` · prossimo: S${esc(next.season)}E${esc(next.number)}` : ''}</p>
+        <h2>${esc(item.title)}</h2>
+        <p>${eps.filter(e => e.watched).length}/${eps.length} episodi visti</p>
+        <div class="edit-box">
+          <h3>Modifica scheda</h3>
+          <div class="form-grid detail-grid">
+            <label>Titolo<input id="editTitle" value="${esc(item.title)}"></label>
+            <label>Anno<input id="editYear" value="${esc(item.year || '')}" inputmode="numeric"></label>
+            <label class="checkline"><input id="editFavorite" type="checkbox" ${item.favorite ? 'checked' : ''}> Preferita</label>
           </div>
-          <div class="detail-actions">
-            ${next ? `<button class="primary" id="markNextBtn">Segna prossimo visto</button>` : ''}
+          <div class="actions wrap detail-actions">
+            <button class="primary" id="saveItemBtn">Salva modifiche</button>
             <button class="danger" id="deleteItemBtn">Elimina serie</button>
           </div>
         </div>
 
-        <section class="edit-box">
-          <h3>Correggi scheda serie</h3>
-          <div class="edit-grid">
-            <label>Titolo
-              <input id="editItemTitle" value="${esc(item.title)}">
-            </label>
-            <label>Anno
-              <input id="editItemYear" value="${esc(item.year || '')}" inputmode="numeric">
-            </label>
-            <label class="checkline">
-              <input id="editItemFavorite" type="checkbox" ${item.favorite ? 'checked' : ''}> preferita
-            </label>
-            <button class="primary" id="saveItemBtn">Salva modifiche</button>
-          </div>
-        </section>
-
-        <section class="episode-board-box">
-          <div class="episode-board-head">
-            <div>
-              <h3>Episodi</h3>
-              <p class="hint">Clicca l'episodio per visto/non visto. Usa ✎ per correggere stagione, numero o titolo. Usa × per rimuovere un episodio importato male.</p>
-            </div>
-            <select id="seasonPicker" aria-label="Scegli stagione">${seasonOptions}</select>
-          </div>
-          ${activeSeasonEpisodes.length
-            ? `<div class="episode-grid">${activeSeasonEpisodes.map(episodeButtonHtml).join('')}</div>`
-            : '<div class="empty">Nessun episodio salvato per questa stagione. Aggiungili dal box sotto.</div>'}
-        </section>
-
-        <section class="continue-series-box">
+        <div class="edit-box">
           <h3>Aggiungi episodi mancanti</h3>
-          <p class="hint">Crea nuovi episodi nel database locale della serie. Quelli già presenti non vengono duplicati e quelli già visti restano visti.</p>
-          <div class="episode-range-grid">
-            <label>Stagione
-              <input id="rangeSeason" type="number" min="0" value="${esc(activeSeason || suggestedSeason)}">
-            </label>
-            <label>Da episodio
-              <input id="rangeFrom" type="number" min="1" value="${esc(suggestedFrom)}">
-            </label>
-            <label>A episodio
-              <input id="rangeTo" type="number" min="1" value="${esc(suggestedTo)}">
-            </label>
-            <label class="checkline">
-              <input id="rangeWatched" type="checkbox"> già visti
-            </label>
-            <button class="primary" id="addRangeBtn">+ Aggiungi</button>
-            <button class="ghost" id="markRangeBtn">Segna intervallo visto</button>
+          <div class="manual-episodes-grid">
+            <label>Stagione<input id="manualSeason" type="number" min="0" value="1"></label>
+            <label>Da episodio<input id="manualEpFrom" type="number" min="1" value="1"></label>
+            <label>A episodio<input id="manualEpTo" type="number" min="1" value="10"></label>
+            <label class="checkline"><input id="manualWatched" type="checkbox"> già visti</label>
+            <button class="primary" id="addEpisodesBtn">+ Aggiungi episodi</button>
           </div>
-        </section>
+        </div>
 
-        ${seasons.length ? `<section class="season-summary"><h3>Tutte le stagioni</h3>${seasons.map(([season, arr]) => {
-          const watched = arr.filter(e => e.watched).length;
-          return `<button class="season-chip ${numberFrom(season) === activeSeason ? 'active' : ''}" data-season="${esc(season)}">S${esc(season)} · ${watched}/${arr.length}</button>`;
-        }).join('')}</section>` : ''}
-      `;
+        ${eps.length ? seasonsHtml : '<div class="empty">Nessun episodio importato. Puoi aggiungerli manualmente sopra.</div>'}`;
 
-      $('saveItemBtn').onclick = () => saveItemEdits(item);
-      $('deleteItemBtn').onclick = () => deleteItem(item);
-
-      const seasonPicker = $('seasonPicker');
-      if (seasonPicker) seasonPicker.onchange = () => openDetail(id, numberFrom(seasonPicker.value));
-
-      content.querySelectorAll('.season-chip').forEach(btn => btn.addEventListener('click', () => {
-        openDetail(id, numberFrom(btn.dataset.season));
-      }));
-
-      const markNextBtn = $('markNextBtn');
-      if (markNextBtn) markNextBtn.onclick = async () => {
-        const ep = nextEpisode(item.id);
-        if (!ep) return;
-        ep.watched = true;
-        ep.watchedAt = ep.watchedAt || new Date().toISOString().slice(0, 10);
+      $('saveItemBtn').onclick = async () => {
+        item.title = $('editTitle').value.trim() || item.title;
+        item.year = $('editYear').value.trim();
+        item.favorite = $('editFavorite').checked;
+        item.search = norm(`${item.title} ${item.year || ''}`);
+        (state.episodes[item.id] || []).forEach(ep => ep.seriesTitle = item.title);
         await saveState();
         renderAll();
-        openDetail(id, numberFrom(ep.season));
-        log(`${item.title}: segnato visto S${ep.season}E${ep.number}.`);
+        openDetail(id);
+        log(`Modificata serie: ${item.title}`);
+      };
+      $('deleteItemBtn').onclick = async () => {
+        if (!confirm(`Eliminare definitivamente "${item.title}" e tutti i suoi episodi da WatchTrail?`)) return;
+        state.items = state.items.filter(x => x.id !== item.id);
+        delete state.episodes[item.id];
+        await saveState();
+        renderAll();
+        $('detailDialog').close();
+        log(`Eliminata serie: ${item.title}`);
+      };
+      $('addEpisodesBtn').onclick = async () => {
+        const season = numberFrom($('manualSeason').value);
+        const from = numberFrom($('manualEpFrom').value);
+        const to = numberFrom($('manualEpTo').value);
+        const markWatched = $('manualWatched').checked;
+        if ((!season && season !== 0) || !from || !to || to < from) {
+          log('Intervallo episodi non valido.', 'error');
+          return;
+        }
+        const today = new Date().toISOString().slice(0, 10);
+        const newEpisodes = [];
+        for (let n = from; n <= to; n++) {
+          newEpisodes.push({
+            id: `${item.id}_s${season}_e${n}`,
+            seriesId: item.id,
+            seriesTitle: item.title,
+            season,
+            number: n,
+            title: `Episodio ${n}`,
+            watched: markWatched,
+            watchedAt: markWatched ? today : '',
+            rewatch: 0,
+            airdate: ''
+          });
+        }
+        state.episodes[item.id] = mergeEpisodes(state.episodes[item.id] || [], newEpisodes);
+        await saveState();
+        renderAll();
+        openDetail(id);
+        log(`Aggiunti episodi a ${item.title}: S${season}E${from}-E${to}`);
       };
 
-      content.querySelectorAll('.episode-tile').forEach(btn => btn.addEventListener('click', async () => {
+      content.querySelectorAll('.episode-main').forEach(btn => btn.addEventListener('click', async () => {
         const ep = (state.episodes[item.id] || []).find(x => x.id === btn.dataset.ep);
         if (!ep) return;
         ep.watched = !ep.watched;
         ep.watchedAt = ep.watched ? (ep.watchedAt || new Date().toISOString().slice(0, 10)) : '';
         await saveState();
         renderAll();
-        openDetail(id, numberFrom(ep.season));
-        log(`${item.title}: S${ep.season}E${ep.number} ${ep.watched ? 'visto' : 'non visto'}.`);
+        openDetail(id);
       }));
-
-      content.querySelectorAll('.edit-ep').forEach(btn => btn.addEventListener('click', e => {
-        e.stopPropagation();
-        editEpisode(item.id, btn.dataset.ep);
+      content.querySelectorAll('.edit-ep').forEach(btn => btn.addEventListener('click', async () => {
+        const ep = (state.episodes[item.id] || []).find(x => x.id === btn.dataset.ep);
+        if (!ep) return;
+        const season = prompt('Stagione:', ep.season);
+        if (season === null) return;
+        const number = prompt('Episodio:', ep.number);
+        if (number === null) return;
+        const title = prompt('Titolo episodio:', ep.title || '');
+        if (title === null) return;
+        const watchedAt = prompt('Data visto YYYY-MM-DD, vuoto se non visto:', ep.watchedAt || '');
+        if (watchedAt === null) return;
+        ep.season = numberFrom(season);
+        ep.number = numberFrom(number);
+        ep.title = title.trim() || `Episodio ${ep.number || '?'}`;
+        ep.watchedAt = watchedAt.trim();
+        ep.watched = Boolean(ep.watchedAt);
+        state.episodes[item.id] = mergeEpisodes([], state.episodes[item.id] || []);
+        await saveState();
+        renderAll();
+        openDetail(id);
       }));
-
-      content.querySelectorAll('.delete-ep').forEach(btn => btn.addEventListener('click', e => {
-        e.stopPropagation();
-        deleteEpisode(item.id, btn.dataset.ep);
+      content.querySelectorAll('.delete-ep').forEach(btn => btn.addEventListener('click', async () => {
+        const ep = (state.episodes[item.id] || []).find(x => x.id === btn.dataset.ep);
+        if (!ep) return;
+        if (!confirm(`Eliminare S${ep.season}E${ep.number} da "${item.title}"?`)) return;
+        state.episodes[item.id] = (state.episodes[item.id] || []).filter(x => x.id !== ep.id);
+        await saveState();
+        renderAll();
+        openDetail(id);
       }));
-
-      const readRange = () => ({
-        season: numberFrom($('rangeSeason').value),
-        from: numberFrom($('rangeFrom').value),
-        to: numberFrom($('rangeTo').value),
-        watched: $('rangeWatched').checked
-      });
-
-      $('addRangeBtn').onclick = async () => {
-        try {
-          const r = readRange();
-          const result = addEpisodeRangeToSeries(item.id, r.season, r.from, r.to, r.watched);
-          await saveState();
-          renderAll();
-          openDetail(id, r.season);
-          log(`${item.title}: aggiunti ${result.added}/${result.total} episodi S${r.season}E${r.from}-E${r.to}. Duplicati ignorati: ${result.skipped}.`);
-        } catch (err) {
-          log(err.message || String(err), 'error');
-        }
-      };
-
-      $('markRangeBtn').onclick = async () => {
-        try {
-          const r = readRange();
-          if (!r.from || !r.to || r.to < r.from) throw new Error('Intervallo episodi non valido.');
-          const result = addEpisodeRangeToSeries(item.id, r.season, r.from, r.to, false);
-          const changed = markEpisodeRange(item.id, r.season, r.from, r.to, true);
-          await saveState();
-          renderAll();
-          openDetail(id, r.season);
-          log(`${item.title}: intervallo S${r.season}E${r.from}-E${r.to} segnato visto. Creati mancanti: ${result.added}, aggiornati: ${changed}.`);
-        } catch (err) {
-          log(err.message || String(err), 'error');
-        }
-      };
     }
-    if (!$('detailDialog').open) $('detailDialog').showModal();
+    $('detailDialog').showModal();
   }
 
   function exportJson() {
@@ -1186,6 +963,122 @@
     const rows = movies.map(m => [m.title, m.year || '', m.watched ? 'yes' : 'no', m.watchedAt || '', m.external?.imdb || '', m.external?.tmdb || '']);
     const csv = [header, ...rows].map(row => row.map(csvEscape).join(',')).join('\n');
     download(`watchtrail-film-${new Date().toISOString().slice(0, 10)}.csv`, 'text/csv;charset=utf-8', csv);
+  }
+
+  function todayStamp() {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  function nullableId(value) {
+    const v = String(value ?? '').trim();
+    return v ? v : null;
+  }
+
+  function externalId(item, key) {
+    return nullableId(item?.external?.[key]);
+  }
+
+  function tvTimeSeriesPayload() {
+    return state.items
+      .filter(item => item.kind === 'series')
+      .sort((a, b) => String(a.title).localeCompare(String(b.title), 'it'))
+      .map(item => {
+        const eps = (state.episodes[item.id] || []).slice().sort((a, b) =>
+          (numberFrom(a.season) - numberFrom(b.season)) || (numberFrom(a.number) - numberFrom(b.number))
+        );
+        const seasons = new Map();
+        eps.forEach(ep => {
+          const seasonNumber = numberFrom(ep.season);
+          if (!seasons.has(seasonNumber)) {
+            seasons.set(seasonNumber, {
+              number: seasonNumber,
+              is_specials: seasonNumber === 0,
+              episodes: []
+            });
+          }
+          seasons.get(seasonNumber).episodes.push({
+            id: {
+              tvdb: nullableId(ep.external?.tvdb || ep.tvdb || null),
+              imdb: nullableId(ep.external?.imdb || ep.imdb || null)
+            },
+            number: numberFrom(ep.number),
+            name: ep.title || `Episodio ${numberFrom(ep.number) || ''}`.trim(),
+            special: seasonNumber === 0,
+            is_watched: Boolean(ep.watched),
+            watched_at: ep.watchedAt || null,
+            rewatch_count: numberFrom(ep.rewatch),
+            watched_count: ep.watched ? Math.max(1, numberFrom(ep.rewatch) + 1) : 0
+          });
+        });
+        return {
+          uuid: externalId(item, 'tvtime'),
+          id: {
+            tvdb: externalId(item, 'tvdb'),
+            imdb: externalId(item, 'imdb')
+          },
+          created_at: null,
+          title: item.title,
+          status: item.status && item.status !== 'unknown' ? item.status : (eps.some(e => !e.watched) ? 'watching' : 'watched'),
+          is_favorite: Boolean(item.favorite),
+          seasons: Array.from(seasons.values())
+        };
+      });
+  }
+
+  function tvTimeMoviesPayload() {
+    return state.items
+      .filter(item => item.kind === 'movie')
+      .sort((a, b) => String(a.title).localeCompare(String(b.title), 'it'))
+      .map(item => ({
+        id: {
+          tvdb: externalId(item, 'tvdb'),
+          imdb: externalId(item, 'imdb')
+        },
+        uuid: externalId(item, 'tvtime'),
+        created_at: null,
+        title: item.title,
+        year: item.year ? Number(item.year) || item.year : null,
+        watched_at: item.watchedAt || null,
+        is_watched: Boolean(item.watched),
+        is_favorite: Boolean(item.favorite),
+        rewatch_count: numberFrom(item.rewatch)
+      }));
+  }
+
+  function tvTimeListsPayload() {
+    return [];
+  }
+
+  function exportRefractSeriesJson() {
+    const date = todayStamp();
+    download(`tvtime-series-${date}.json`, 'application/json', JSON.stringify(tvTimeSeriesPayload(), null, 2));
+    log('Export Refract JSON serie generato.');
+  }
+
+  function exportRefractMoviesJson() {
+    const date = todayStamp();
+    download(`tvtime-movies-${date}.json`, 'application/json', JSON.stringify(tvTimeMoviesPayload(), null, 2));
+    log('Export Refract JSON film generato.');
+  }
+
+  function exportRefractListsJson() {
+    const date = todayStamp();
+    download(`tvtime-lists-${date}.json`, 'application/json', JSON.stringify(tvTimeListsPayload(), null, 2));
+    log('Export Refract JSON liste vuote generato.');
+  }
+
+  async function exportRefractZip() {
+    if (!window.JSZip) {
+      throw new Error('JSZip non caricato: impossibile creare ZIP Refract.');
+    }
+    const date = todayStamp();
+    const zip = new JSZip();
+    zip.file(`tvtime-series-${date}.json`, JSON.stringify(tvTimeSeriesPayload(), null, 2));
+    zip.file(`tvtime-movies-${date}.json`, JSON.stringify(tvTimeMoviesPayload(), null, 2));
+    zip.file(`tvtime-lists-${date}.json`, JSON.stringify(tvTimeListsPayload(), null, 2));
+    const blob = await zip.generateAsync({ type: 'blob' });
+    download(`tvtime-export-${date}.zip`, 'application/zip', blob);
+    log('Export ZIP Refract generato.');
   }
 
   function csvEscape(v) {
@@ -1213,6 +1106,10 @@
     $('exportJsonBtn').addEventListener('click', exportJson);
     $('downloadJsonBtn').addEventListener('click', exportJson);
     $('downloadMoviesCsvBtn').addEventListener('click', exportMoviesCsv);
+    $('downloadRefractZipBtn').addEventListener('click', () => exportRefractZip().catch(err => log(`ERRORE export ZIP Refract: ${err?.message || err}`, 'error')));
+    $('downloadRefractSeriesBtn').addEventListener('click', exportRefractSeriesJson);
+    $('downloadRefractMoviesBtn').addEventListener('click', exportRefractMoviesJson);
+    $('downloadRefractListsBtn').addEventListener('click', exportRefractListsJson);
     $('wipeBtn').addEventListener('click', wipeState);
     $('clearLogBtn').addEventListener('click', () => $('logBox').textContent = 'Log pulito.');
     $('refreshBtn').addEventListener('click', renderAll);
@@ -1229,19 +1126,8 @@
     }));
 
     document.body.addEventListener('click', e => {
-      const target = e.target.closest('.open-detail, .open-detail-card');
-      if (!target) return;
-      const id = target.dataset.id || target.closest('[data-id]')?.dataset.id;
-      if (id) openDetail(id);
-    });
-
-    document.body.addEventListener('keydown', e => {
-      const card = e.target.closest?.('.open-detail-card');
-      if (!card) return;
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        openDetail(card.dataset.id);
-      }
+      const btn = e.target.closest('.open-detail');
+      if (btn) openDetail(btn.dataset.id);
     });
 
     const dropZone = $('dropZone');
@@ -1296,7 +1182,7 @@
     registerPwa();
     await loadState();
     renderAll();
-    log('WatchTrail pronto. Import supportato: ZIP, CSV, JSON.');
+    log('WatchTrail v7 pronto. Import ZIP/CSV/JSON ed export Refract compatibile disponibili.');
   }
 
   init().catch(err => log(`Errore avvio: ${err?.message || err}`, 'error'));
